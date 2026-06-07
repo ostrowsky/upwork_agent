@@ -194,6 +194,17 @@ class ClientMessage(Base):
     client = relationship("Client", back_populates="messages")
 
 
+class AgentChatMessage(Base):
+    """Free-form operator↔agent chat (the «Чат с агентом» tab). Persistent history."""
+    __tablename__ = "agent_chat_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    task_id = Column(Integer, ForeignKey("tasks.id"), nullable=True)
+    role = Column(String(20), nullable=False)  # user | assistant
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class AgentQuestion(Base):
     __tablename__ = "agent_questions"
 

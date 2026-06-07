@@ -463,39 +463,6 @@ def task_chat_reply(task):
     return call_llm(messages)
 
 
-def ai_answer_for_question(question_text, task_id):
-    """Generate an LLM answer to an agent question, grounded in the task strategy.
-
-    Used by the «Вопросы агенту» AI-answer button so the operator can ask the
-    agent and get a reply (then edit/save it into the strategy).
-    """
-    from ai import call_llm
-
-    task = None
-    tid = task_id
-    if tid is None:
-        active = get_active_task()
-        tid = active.id if active else None
-    if tid is not None:
-        db = get_db_session()
-        try:
-            task = db.query(Task).filter(Task.id == tid).first()
-        finally:
-            db.close()
-    strategy = ((task.strategy or task.description) if task else "") or ""
-    system = (
-        "Ты — стратег по продажам на Upwork. Кратко и по делу ответь на вопрос "
-        "оператора, опираясь на стратегию активной задачи. Если данных не хватает — "
-        "предложи разумный вариант и уточни, чего не хватает. Отвечай на языке вопроса."
-    )
-    if strategy:
-        system += f"\n\nТекущая стратегия задачи:\n{strategy}"
-    return call_llm([
-        {"role": "system", "content": system},
-        {"role": "user", "content": question_text},
-    ])
-
-
 def render_companies_tasks():
     st.title("Компании и задачи")
 
@@ -1363,75 +1330,170 @@ def render_clients():
         db.close()
 
 
-def render_questions():
+def get_agent_chat(task_id):
+    from database import AgentChatMessage
+
+    db = get_db_session()
+    try:
+        q = db.query(AgentChatMessage)
+        q = q.filter(AgentChatMessage.task_id == task_id) if task_id is not None \
+            else q.filter(AgentChatMessage.task_id.is_(None))
+        return q.order_by(AgentChatMessage.created_at.asc(), AgentChatMessage.id.asc()).all()
+    finally:
+        db.close()
+
+
+def add_agent_chat(task_id, role, content):
+    from database import AgentChatMessage
+
+    db = get_db_session()
+    try:
+        db.add(AgentChatMessage(task_id=task_id, role=role, content=content))
+        db.commit()
+    finally:
+        db.close()
+
+
+def clear_agent_chat(task_id):
+    from database import AgentChatMessage
+
+    db = get_db_session()
+    try:
+        q = db.query(AgentChatMessage)
+        q = q.filter(AgentChatMessage.task_id == task_id) if task_id is not None \
+            else q.filter(AgentChatMessage.task_id.is_(None))
+        q.delete()
+        db.commit()
+    finally:
+        db.close()
+
+
+def build_agent_chat_context():
+    """Maximal grounding for the agent chat: strategy + funnel + outcomes + losses + cases + open questions + balance."""
+    import learning as L
+    from analytics import compute_metrics, analytics_by_bucket
+    from database import Job, CaseStudy
+
+    lines = []
+    db = get_db_session()
+    try:
+        active = get_active_task()
+        tid = active.id if active else None
+        if active:
+            strat = (active.strategy or active.description or "").strip()
+            lines.append(f"АКТИВНАЯ ЗАДАЧА: #{active.id} {active.name}")
+            if strat:
+                lines.append(f"СТРАТЕГИЯ:\n{strat}")
+        else:
+            lines.append("Активной задачи нет (выбери в «Компании и задачи»).")
+
+        m = compute_metrics(db, tid)
+        lines.append(
+            f"ВОРОНКА: отклики={m['proposals_sent']}, connects потрачено={m['connects_spent']}, "
+            f"ответы={m['replies']}, интервью={m['interviews']}, найм={m['hires']}, "
+            f"выручка=${m['revenue']}, проигрыши={m['lost']}"
+        )
+        under = [b["bucket"] for b in analytics_by_bucket(db, tid) if b["underperforming"]]
+        if under:
+            lines.append("НЕЭФФЕКТИВНЫЕ КАТЕГОРИИ (≥3 отправок, 0 наймов): " + ", ".join(under))
+
+        jq = db.query(Job)
+        if tid is not None:
+            jq = jq.filter(Job.task_id == tid)
+        recent = jq.order_by(Job.created_at.desc()).limit(15).all()
+        if recent:
+            lines.append("ПОСЛЕДНИЕ ВАКАНСИИ:")
+            for j in recent:
+                s = f"- #{j.id} [{j.status}] {(j.title or '')[:65]}"
+                if j.outcome:
+                    s += f" · исход={j.outcome}" + (f" ${j.revenue}" if j.revenue else "")
+                lines.append(s)
+        losses = [j for j in recent if j.loss_reason]
+        if losses:
+            lines.append("РАЗБОРЫ ПРОИГРЫШЕЙ:")
+            for j in losses[:5]:
+                lines.append(f"- #{j.id}: {(j.loss_reason or '')[:220]}")
+
+        cases = db.query(CaseStudy).filter(CaseStudy.deleted == 0).all()
+        if cases:
+            niches = sorted({(c.niche or "").strip() for c in cases if c.niche})
+            syn = sum(1 for c in cases if getattr(c, "synthetic", 0))
+            lines.append(f"КЕЙСОВ В БАЗЕ: {len(cases)} (из них synthetic: {syn})"
+                         + (f"; ниши: {', '.join(list(niches)[:8])}" if niches else ""))
+
+        open_qs = L.list_questions(db, status="open")
+        if open_qs:
+            lines.append("ОТКРЫТЫЕ ВОПРОСЫ АГЕНТА (что стоит уточнить у оператора):")
+            for q in open_qs[:8]:
+                lines.append(f"- {(q.text or '')[:160]}")
+    finally:
+        db.close()
+
+    try:
+        from connects import read_balance
+
+        bal = read_balance()
+        if bal:
+            lines.append(f"БАЛАНС CONNECTS: {bal['balance']} (на {bal['updated_at'][:16]})")
+    except Exception:  # noqa: BLE001
+        pass
+    return "\n".join(lines)
+
+
+def agent_chat_reply(task_id):
+    from ai import call_llm
+
+    system = (
+        "Ты — AI-агент по продажам на Upwork и ассистент оператора студии геймдева. "
+        "Отвечай кратко и по делу, на языке оператора (RU/EN). Используй контекст ниже "
+        "(стратегия задачи, метрики воронки, исходы и разборы проигрышей, кейсы, баланс) "
+        "для конкретных рекомендаций. Если данных не хватает — скажи, чего именно, и предложи шаг.\n\n"
+        "=== КОНТЕКСТ ===\n" + build_agent_chat_context()
+    )
+    messages = [{"role": "system", "content": system}]
+    for msg in get_agent_chat(task_id)[-CHAT_HISTORY_WINDOW:]:
+        messages.append({"role": msg.role, "content": msg.content})
+    return call_llm(messages)
+
+
+def render_agent_chat():
     import learning as L
 
-    st.title("Вопросы агенту")
-    st.caption("Агент задаёт вопросы (в т.ч. после проигрышей). Ответы попадают в стратегию задачи.")
+    st.title("Чат с агентом")
+    st.caption("Спросите агента что угодно — он отвечает с учётом стратегии, метрик, исходов и кейсов. История сохраняется.")
 
-    with st.expander("➕ Добавить вопрос вручную"):
-        with st.form("add_question"):
-            active = get_active_task()
-            qtext = st.text_area("Текст вопроса", height=80)
-            if st.form_submit_button("Создать"):
-                if qtext.strip():
-                    db = get_db_session()
-                    try:
-                        L.create_question(db, qtext.strip(), task_id=active.id if active else None)
-                    finally:
-                        db.close()
-                    st.success("Вопрос создан.")
-                    st.rerun()
+    active = get_active_task()
+    tid = active.id if active else None
 
     db = get_db_session()
     try:
         open_qs = L.list_questions(db, status="open")
-        answered = L.list_questions(db, status="answered")
-
-        st.subheader(f"Открытые ({len(open_qs)})")
-        if not open_qs:
-            st.info("Открытых вопросов нет.")
-        from database import AgentQuestion as _AQ
-
-        for q in (paginate(open_qs, "questions_open") if open_qs else []):
-            with st.container(border=True):
-                st.markdown(q.text)
-                # An AI draft generated on the previous run pre-fills the field.
-                _pending = st.session_state.pop(f"qpending_{q.id}", None)
-                if _pending is not None:
-                    st.session_state[f"ans_{q.id}"] = _pending
-                ans = st.text_area("Ответ", key=f"ans_{q.id}", height=80)
-                bc1, bc2 = st.columns([1, 2])
-                with bc1:
-                    if st.button("Ответить", key=f"ansbtn_{q.id}"):
-                        if ans.strip():
-                            L.answer_question(db, q.id, ans.strip())
-                            st.success("Ответ сохранён, добавлен в стратегию задачи.")
-                            st.rerun()
-                        else:
-                            st.error("Пустой ответ.")
-                with bc2:
-                    if st.button("🤖 Ответить с помощью AI", key=f"aians_{q.id}"):
-                        with st.spinner("LLM генерирует ответ…"):
-                            try:
-                                st.session_state[f"qpending_{q.id}"] = ai_answer_for_question(q.text, q.task_id)
-                            except Exception as exc:  # noqa: BLE001
-                                st.session_state[f"qpending_{q.id}"] = f"[Ошибка LLM: {exc}]"
-                        st.rerun()
-                edit_delete_controls(
-                    f"q_{q.id}", q.text,
-                    on_save=lambda v, qid=q.id: update_row(_AQ, qid, text=v),
-                    on_delete=lambda qid=q.id: delete_row(_AQ, qid),
-                    label="Текст вопроса",
-                )
-
-        if answered:
-            with st.expander(f"Отвеченные ({len(answered)})"):
-                for q in answered:
-                    st.markdown(f"**{q.text}**")
-                    st.caption(f"→ {q.answer}")
     finally:
         db.close()
+    if open_qs:
+        with st.expander(f"❓ Агент хочет уточнить ({len(open_qs)})"):
+            for q in open_qs:
+                st.markdown(f"- {q.text}")
+            st.caption("Ответь на них прямо в чате ниже.")
+
+    history = get_agent_chat(tid)
+    for msg in history:
+        with st.chat_message(msg.role):
+            st.write(msg.content)
+
+    if history and st.button("🗑 Очистить историю чата"):
+        clear_agent_chat(tid)
+        st.rerun()
+
+    prompt = st.chat_input("Спросите агента…")
+    if prompt:
+        add_agent_chat(tid, "user", prompt)
+        try:
+            reply = agent_chat_reply(tid)
+        except Exception as exc:  # noqa: BLE001
+            reply = f"[Ошибка LLM: {exc}]"
+        add_agent_chat(tid, "assistant", reply)
+        st.rerun()
 
 
 page = st.sidebar.radio(
@@ -1442,7 +1504,7 @@ page = st.sidebar.radio(
         "Вакансии",
         "Кейсы",
         "Клиенты",
-        "Вопросы агенту",
+        "Чат с агентом",
     ],
 )
 
@@ -1476,5 +1538,5 @@ elif page == "Кейсы":
     render_cases()
 elif page == "Клиенты":
     render_clients()
-elif page == "Вопросы агенту":
-    render_questions()
+elif page == "Чат с агентом":
+    render_agent_chat()
