@@ -36,6 +36,36 @@ def make_progress(prefix: str):
     return bar, cb
 
 
+def paginate(items, key, default_size=10, size_options=(5, 10, 20, 50)):
+    """Render pagination controls and return the slice for the current page.
+
+    Per-list page/size are kept in session_state under the given `key`.
+    """
+    total = len(items)
+    sk_page, sk_size = f"pg_{key}", f"pgsize_{key}"
+    c0, c1, c2, c3 = st.columns([2, 1, 1, 2])
+    with c0:
+        size = st.selectbox(
+            "На странице", list(size_options),
+            index=list(size_options).index(default_size) if default_size in size_options else 0,
+            key=sk_size,
+        )
+    pages = max(1, (total + size - 1) // size)
+    cur = min(max(1, st.session_state.get(sk_page, 1)), pages)
+    with c1:
+        if st.button("◀ Назад", key=f"prev_{key}", disabled=cur <= 1, use_container_width=True):
+            st.session_state[sk_page] = cur - 1
+            st.rerun()
+    with c2:
+        if st.button("Вперёд ▶", key=f"next_{key}", disabled=cur >= pages, use_container_width=True):
+            st.session_state[sk_page] = cur + 1
+            st.rerun()
+    with c3:
+        st.caption(f"Страница {cur} из {pages} · всего {total}")
+    start = (cur - 1) * size
+    return items[start:start + size]
+
+
 def run_browser_op(fn):
     """Run a browser operation under the cross-process lock (gap #3).
 
@@ -848,7 +878,7 @@ def render_jobs():
         return
 
     _decision_icon = {"APPLY": "✅ APPLY", "SKIP": "⛔ SKIP"}
-    for job in jobs:
+    for job in paginate(jobs, "jobs"):
         with st.container(border=True):
             col1, col2, col3 = st.columns([3, 1, 1])
 
@@ -1076,7 +1106,7 @@ def render_cases():
         st.info("Кейсов пока нет.")
         return
 
-    for case in cases:
+    for case in paginate(cases, "cases"):
         with st.container(border=True):
             badge = " 🧪 _synthetic_" if getattr(case, "synthetic", 0) else ""
             st.markdown(f"### #{case.id} — {case.title}{badge}")
@@ -1213,7 +1243,7 @@ def render_clients():
         if not clients:
             st.info("Пока нет клиентов. Импортируй первое сообщение выше.")
             return
-        for client in clients:
+        for client in paginate(clients, "clients"):
             label = client.name or f"Клиент #{client.id}"
             with st.container(border=True):
                 top1, top2 = st.columns([3, 1])
@@ -1330,7 +1360,7 @@ def render_questions():
             st.info("Открытых вопросов нет.")
         from database import AgentQuestion as _AQ
 
-        for q in open_qs:
+        for q in (paginate(open_qs, "questions_open") if open_qs else []):
             with st.container(border=True):
                 st.markdown(q.text)
                 ans = st.text_area("Ответ", key=f"ans_{q.id}", height=80)
