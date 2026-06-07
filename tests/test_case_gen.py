@@ -1,0 +1,83 @@
+"""Synthetic, job-tailored case generation + attachment rendering."""
+
+import json
+import os
+import sys
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import database  # noqa: E402
+from database import Base, Job, CaseStudy  # noqa: E402
+import cases  # noqa: E402
+import case_artifacts  # noqa: E402
+
+
+@pytest.fixture()
+def db(tmp_path, monkeypatch):
+    engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
+    Base.metadata.create_all(bind=engine)
+    monkeypatch.setattr(case_artifacts, "ARTIFACT_DIR", tmp_path / "artifacts")
+    session = sessionmaker(bind=engine)()
+    yield session
+    session.close()
+
+
+_SAMPLE = json.dumps({
+    "title": "Cross-platform Unity Runner", "niche": "Unity mobile",
+    "stack": "Unity, C#, Firebase", "budget_range": "$8,000-$14,000", "duration": "10 weeks",
+    "role": "Lead Unity Dev", "summary": "Shipped a 3D endless runner to iOS/Android.",
+    "approach": ["Greybox in week 1", "LiveOps via Remote Config"],
+    "results": ["1.2M installs", "4.6 rating", "Crash-free 99.5%"],
+    "metrics": [{"label": "Installs", "value": "1.2M"}, {"label": "Rating", "value": "4.6"}],
+})
+
+
+def test_parse_case_json_variants():
+    assert cases._parse_case_json('{"title":"X"}')["title"] == "X"
+    assert cases._parse_case_json('```json\n{"title":"Y"}\n```')["title"] == "Y"
+    with pytest.raises(ValueError):
+        cases._parse_case_json("not json")
+    with pytest.raises(ValueError):
+        cases._parse_case_json('{"niche":"no title"}')
+
+
+def test_generate_case_for_job_saves_and_renders(db):
+    job = Job(title="Unity Mobile Game Developer", description="iOS/Android Unity game", status="READY_TO_PROPOSE")
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+
+    res = cases.generate_case_for_job(job, None, db, llm=lambda m: _SAMPLE)
+    assert res["ok"] is True
+    case = db.query(CaseStudy).filter(CaseStudy.id == res["case_id"]).first()
+    assert case.synthetic == 1
+    assert case.job_id == job.id
+    assert case.title == "Cross-platform Unity Runner"
+    # Artifact files were produced and linked.
+    assert res["artifact_path"] and os.path.exists(res["artifact_path"])
+    assert res["png_path"] and os.path.exists(res["png_path"])
+    assert case.artifact_path == res["artifact_path"]
+
+
+def test_generate_case_handles_bad_llm(db):
+    job = Job(title="X", description="y", status="READY_TO_PROPOSE")
+    db.add(job)
+    db.commit()
+    res = cases.generate_case_for_job(job, None, db, llm=lambda m: "garbage")
+    assert res["ok"] is False
+    assert db.query(CaseStudy).count() == 0
+
+
+def test_render_case_pdf_from_dict(tmp_path):
+    out = tmp_path / "c.pdf"
+    path = case_artifacts.render_case_pdf(
+        {"id": 1, "title": "T", "niche": "n", "results_list": ["r1"],
+         "metrics_list": [{"label": "L", "value": "V"}]},
+        out,
+    )
+    assert os.path.exists(path)
+    assert os.path.getsize(path) > 500  # a real PDF, not empty
