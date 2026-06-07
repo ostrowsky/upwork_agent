@@ -1459,6 +1459,35 @@ def build_agent_chat_context():
     return "\n".join(lines)
 
 
+def process_agent_message(tid, prompt) -> str:
+    """Decide on a tool call or a plain reply, execute, and return the assistant text.
+
+    Fully defensive: any error becomes a returned message (the chat must never crash
+    or orphan a user message without a reply).
+    """
+    import agent_tools
+    from ai import call_llm
+
+    try:
+        hist = [(m.role, m.content) for m in get_agent_chat(tid)]
+        if hist and hist[-1] == ("user", prompt):
+            hist = hist[:-1]  # `prompt` is appended separately by select_action
+        with st.spinner("Агент думает…"):
+            decision = agent_tools.select_action(prompt, hist, build_agent_chat_context(), call_llm)
+        reply = decision.get("reply") or ""
+        action = decision.get("action", "none")
+        if action and action != "none":
+            with st.spinner(f"Выполняю: {action}… (браузерные команды открывают Edge на ~30–60с)"):
+                res = agent_tools.run_action(action, decision.get("args", {}), tid)
+            mark = "✅" if res.get("ok") else "⚠️"
+            reply = (reply + "\n\n" if reply else "") + f"🔧 {mark} {res['summary']}"
+        return reply or "(пустой ответ)"
+    except Exception as exc:  # noqa: BLE001 — never let the chat page crash
+        import traceback
+
+        return f"⚠️ Не удалось обработать сообщение: {type(exc).__name__}: {exc}\n\n```\n{traceback.format_exc()[-600:]}\n```"
+
+
 def render_agent_chat():
     import learning as L
 
@@ -1500,29 +1529,27 @@ def render_agent_chat():
         with st.chat_message(msg.role):
             st.write(msg.content)
 
-    if history and st.button("🗑 Очистить историю чата"):
-        clear_agent_chat(tid)
-        st.rerun()
+    cols = st.columns(2)
+    # Recover orphaned messages: a trailing user message with no agent reply
+    # (e.g. a previous run crashed or was refreshed mid browser-op).
+    if history and history[-1].role == "user":
+        with cols[0]:
+            st.caption("⚠️ На последнее сообщение нет ответа.")
+            if st.button("↻ Ответить на последнее"):
+                reply = process_agent_message(tid, history[-1].content)
+                add_agent_chat(tid, "assistant", reply)
+                st.rerun()
+    if history:
+        with cols[1]:
+            if st.button("🗑 Очистить историю чата"):
+                clear_agent_chat(tid)
+                st.rerun()
 
     prompt = st.chat_input("Спросите агента или дайте команду…")
     if prompt:
-        from ai import call_llm
-
         add_agent_chat(tid, "user", prompt)
-        hist = [(m.role, m.content) for m in get_agent_chat(tid)]
-        with st.spinner("Агент думает…"):
-            try:
-                decision = agent_tools.select_action(prompt, hist, build_agent_chat_context(), call_llm)
-            except Exception as exc:  # noqa: BLE001
-                decision = {"action": "none", "args": {}, "reply": f"[Ошибка LLM: {exc}]"}
-        reply = decision.get("reply") or ""
-        action = decision.get("action", "none")
-        if action and action != "none":
-            with st.spinner(f"Выполняю: {action}…"):
-                res = agent_tools.run_action(action, decision.get("args", {}), tid)
-            mark = "✅" if res.get("ok") else "⚠️"
-            reply = (reply + "\n\n" if reply else "") + f"🔧 {mark} {res['summary']}"
-        add_agent_chat(tid, "assistant", reply or "(пустой ответ)")
+        reply = process_agent_message(tid, prompt)
+        add_agent_chat(tid, "assistant", reply)
         st.rerun()
 
 
