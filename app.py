@@ -1459,23 +1459,6 @@ def build_agent_chat_context():
     return "\n".join(lines)
 
 
-def agent_chat_reply(task_id):
-    from ai import call_llm
-
-    system = (
-        "Ты — AI-агент по продажам на Upwork и ассистент оператора студии геймдева. "
-        "Отвечай кратко и по делу, на языке оператора (RU/EN). Используй контекст ниже "
-        "(стратегия задачи, метрики воронки, исходы и разборы проигрышей, кейсы, баланс, "
-        "переписка с клиентами) для конкретных рекомендаций — в т.ч. что ответить клиенту, "
-        "который ждёт ответа. Если данных не хватает — скажи, чего именно, и предложи шаг.\n\n"
-        "=== КОНТЕКСТ ===\n" + build_agent_chat_context()
-    )
-    messages = [{"role": "system", "content": system}]
-    for msg in get_agent_chat(task_id)[-CHAT_HISTORY_WINDOW:]:
-        messages.append({"role": msg.role, "content": msg.content})
-    return call_llm(messages)
-
-
 def render_agent_chat():
     import learning as L
 
@@ -1496,6 +1479,20 @@ def render_agent_chat():
                 st.markdown(f"- {q.text}")
             st.caption("Ответь на них прямо в чате ниже.")
 
+    import agent_tools
+
+    with st.expander("🔧 Что умеет агент (команды)"):
+        st.markdown(
+            "Можно попросить выполнить действие, например:\n"
+            "- «квалифицируй новые вакансии»\n"
+            "- «сгенерируй черновики откликов»\n"
+            "- «сделай черновик ответа клиенту Ammaniel»\n"
+            "- «сгенерируй кейс под вакансию 83»\n"
+            "- «отправь дневной отчёт»\n\n"
+            "Отправка откликов и сообщений клиентам в чат-инструменты НЕ входит "
+            "(необратимо) — это делается в «Вакансии»/«Клиенты»."
+        )
+
     history = get_agent_chat(tid)
     for msg in history:
         with st.chat_message(msg.role):
@@ -1505,14 +1502,25 @@ def render_agent_chat():
         clear_agent_chat(tid)
         st.rerun()
 
-    prompt = st.chat_input("Спросите агента…")
+    prompt = st.chat_input("Спросите агента или дайте команду…")
     if prompt:
+        from ai import call_llm
+
         add_agent_chat(tid, "user", prompt)
-        try:
-            reply = agent_chat_reply(tid)
-        except Exception as exc:  # noqa: BLE001
-            reply = f"[Ошибка LLM: {exc}]"
-        add_agent_chat(tid, "assistant", reply)
+        hist = [(m.role, m.content) for m in get_agent_chat(tid)]
+        with st.spinner("Агент думает…"):
+            try:
+                decision = agent_tools.select_action(prompt, hist, build_agent_chat_context(), call_llm)
+            except Exception as exc:  # noqa: BLE001
+                decision = {"action": "none", "args": {}, "reply": f"[Ошибка LLM: {exc}]"}
+        reply = decision.get("reply") or ""
+        action = decision.get("action", "none")
+        if action and action != "none":
+            with st.spinner(f"Выполняю: {action}…"):
+                res = agent_tools.run_action(action, decision.get("args", {}), tid)
+            mark = "✅" if res.get("ok") else "⚠️"
+            reply = (reply + "\n\n" if reply else "") + f"🔧 {mark} {res['summary']}"
+        add_agent_chat(tid, "assistant", reply or "(пустой ответ)")
         st.rerun()
 
 
