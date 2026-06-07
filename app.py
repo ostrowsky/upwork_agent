@@ -1426,6 +1426,25 @@ def build_agent_chat_context():
             lines.append("ОТКРЫТЫЕ ВОПРОСЫ АГЕНТА (что стоит уточнить у оператора):")
             for q in open_qs[:8]:
                 lines.append(f"- {(q.text or '')[:160]}")
+
+        # Recent client conversations (so the agent can advise on negotiations).
+        try:
+            import clients as C
+
+            cl = C.list_clients(db)
+            if cl:
+                lines.append("ПЕРЕПИСКА С КЛИЕНТАМИ (последние сообщения):")
+                for c in cl[:6]:
+                    name = c.name or f"Клиент #{c.id}"
+                    msgs = C.get_messages(db, c.id)
+                    waiting = bool(msgs) and msgs[-1].direction == "inbound"
+                    head = f"- {name} [{c.status}]" + (" · ЖДЁТ ОТВЕТА" if waiting else "")
+                    lines.append(head)
+                    for msg in msgs[-3:]:
+                        who = "Клиент" if msg.direction == "inbound" else "Мы"
+                        lines.append(f"    {who}: {(msg.content or '')[:160]}")
+        except Exception:  # noqa: BLE001
+            pass
     finally:
         db.close()
 
@@ -1446,8 +1465,9 @@ def agent_chat_reply(task_id):
     system = (
         "Ты — AI-агент по продажам на Upwork и ассистент оператора студии геймдева. "
         "Отвечай кратко и по делу, на языке оператора (RU/EN). Используй контекст ниже "
-        "(стратегия задачи, метрики воронки, исходы и разборы проигрышей, кейсы, баланс) "
-        "для конкретных рекомендаций. Если данных не хватает — скажи, чего именно, и предложи шаг.\n\n"
+        "(стратегия задачи, метрики воронки, исходы и разборы проигрышей, кейсы, баланс, "
+        "переписка с клиентами) для конкретных рекомендаций — в т.ч. что ответить клиенту, "
+        "который ждёт ответа. Если данных не хватает — скажи, чего именно, и предложи шаг.\n\n"
         "=== КОНТЕКСТ ===\n" + build_agent_chat_context()
     )
     messages = [{"role": "system", "content": system}]
