@@ -289,6 +289,22 @@ def test_attach_files_uploads_to_input():
     assert inp.files == ["/tmp/case_1.pdf", "/tmp/case_2.pdf"]
 
 
+def test_attach_files_verifies_filename_on_page():
+    inp = _AttachLocator(count=1)
+    # Form echoes the uploaded filename → verification should confirm it.
+    page = FakePage({S.APPLY_ATTACH_INPUT: inp}, body="Attachments: case_1.pdf uploaded")
+    res = submit._attach_files(page, ["/tmp/case_1.pdf"])
+    assert res["attached"] == 1 and res["verified"] == 1 and res["reason"] == "ok"
+
+
+def test_attach_files_unverified_when_name_absent():
+    inp = _AttachLocator(count=1)
+    page = FakePage({S.APPLY_ATTACH_INPUT: inp}, body="(no filename shown)")
+    res = submit._attach_files(page, ["/tmp/case_1.pdf"])
+    assert res["attached"] == 1 and res["verified"] == 0
+    assert "not confirmed" in res["reason"]
+
+
 def test_attach_files_no_input_is_noop():
     page = FakePage({})  # no file input on the form
     res = submit._attach_files(page, ["/tmp/case_1.pdf"])

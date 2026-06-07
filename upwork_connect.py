@@ -115,11 +115,21 @@ def browser_channel() -> str:
     return os.getenv("UPWORK_BROWSER_CHANNEL", "chrome").strip().lower() or "chrome"
 
 
+def launch_timeout_ms() -> int:
+    """Browser launch timeout (ms). Lower than Playwright's 180s default so a
+    wedged profile fails fast and the retry/self-heal kicks in sooner."""
+    try:
+        return int(os.getenv("BROWSER_LAUNCH_TIMEOUT", "60000"))
+    except (TypeError, ValueError):
+        return 60000
+
+
 def open_context(playwright, profile_dir: Path, headless: bool):
     profile_dir.mkdir(parents=True, exist_ok=True)
     kwargs = {
         "user_data_dir": str(profile_dir),
         "headless": headless,
+        "timeout": launch_timeout_ms(),
         "viewport": {"width": 1280, "height": 900},
         "args": [
             "--disable-blink-features=AutomationControlled",

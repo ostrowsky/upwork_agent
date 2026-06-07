@@ -360,6 +360,21 @@ def run(interval: int = DEFAULT_INTERVAL, once: bool = False) -> int:
     write_status(state="starting", pid=os.getpid(), interval=interval)
     log.info("=== worker started pid=%s interval=%ss ===", os.getpid(), interval)
 
+    # Startup self-heal: a previous force-killed run can leave a zombie browser
+    # holding the Edge profile. Clean it up (unless the UI currently holds the lock).
+    try:
+        from browser_lock import is_busy
+
+        if not is_busy():
+            from browser_cleanup import cleanup_profile
+            from upwork_connect import pick_profile_dir
+
+            info = cleanup_profile(pick_profile_dir())
+            if info.get("killed") or info.get("removed_locks"):
+                log.info("startup self-heal: %s", info)
+    except Exception as e:  # noqa: BLE001 — never block startup on cleanup
+        log.warning("startup self-heal skipped: %s", e)
+
     while _running:
         status = safe_tick()
         if once:

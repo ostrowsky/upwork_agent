@@ -332,18 +332,31 @@ def attachment_paths_for_job(db, job_id) -> list[str]:
 
 
 def _attach_files(page, paths: list[str]) -> dict:
-    """Best-effort: upload files to the apply form's hidden file input. Never fatal."""
+    """Best-effort: upload files to the apply form's hidden file input + verify.
+
+    Verification: after upload, the form lists the filename — we confirm each
+    basename actually appears on the page, so we don't claim an attachment that
+    silently failed. Never fatal (the submit proceeds regardless).
+    """
     if not paths:
-        return {"attached": 0, "reason": "no files"}
+        return {"attached": 0, "verified": 0, "reason": "no files"}
     try:
         inp = page.locator(S.APPLY_ATTACH_INPUT).first
         if not inp.count():
-            return {"attached": 0, "reason": "no file input on form"}
+            return {"attached": 0, "verified": 0, "reason": "no file input on form"}
         inp.set_input_files(paths)
         page.wait_for_timeout(2500)
-        return {"attached": len(paths), "reason": "ok"}
+        names = [os.path.basename(p) for p in paths]
+        verified = 0
+        try:
+            body = page.inner_text("body", timeout=2500) or ""
+            verified = sum(1 for n in names if n in body)
+        except Exception:  # noqa: BLE001
+            pass
+        reason = "ok" if verified == len(paths) else "uploaded but filename not confirmed on page"
+        return {"attached": len(paths), "verified": verified, "reason": reason}
     except Exception as e:  # noqa: BLE001 — attachment must not block the submit
-        return {"attached": 0, "reason": f"attach error: {e}"}
+        return {"attached": 0, "verified": 0, "reason": f"attach error: {e}"}
 
 
 def _apply_on_page(page, url: str, job: Job, proposal: Proposal, db, dry_run: bool) -> dict:
@@ -410,8 +423,9 @@ def _apply_on_page(page, url: str, job: Job, proposal: Proposal, db, dry_run: bo
         dbg = _dump_apply_debug(page)
         return {"ok": True, "submitted": False, "dry_run": True,
                 "reason": (f"dry-run (filled={filled}, bid={bid}, rate_inc={rate_increase}, "
-                           f"attached={attach['attached']}; {dbg})"),
-                "connects": connects, "attached": attach["attached"]}
+                           f"attached={attach['attached']}/verified={attach.get('verified', 0)}; {dbg})"),
+                "connects": connects, "attached": attach["attached"],
+                "attached_verified": attach.get("verified", 0)}
 
     # LIVE submit (primary button "Send for N Connects").
     send = page.locator(S.APPLY_SEND_BUTTON).first
@@ -483,8 +497,10 @@ def _apply_on_page(page, url: str, job: Job, proposal: Proposal, db, dry_run: bo
         pass
 
     return {"ok": True, "submitted": True, "dry_run": False,
-            "reason": f"sent (url={post_url[:80]}; attached={attach['attached']})",
-            "connects": connects, "attached": attach["attached"]}
+            "reason": (f"sent (url={post_url[:80]}; "
+                       f"attached={attach['attached']}/verified={attach.get('verified', 0)})"),
+            "connects": connects, "attached": attach["attached"],
+            "attached_verified": attach.get("verified", 0)}
 
 
 def submit_proposal(job: Job, proposal: Proposal, db, dry_run: bool | None = None) -> dict:
