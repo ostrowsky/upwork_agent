@@ -463,6 +463,39 @@ def task_chat_reply(task):
     return call_llm(messages)
 
 
+def ai_answer_for_question(question_text, task_id):
+    """Generate an LLM answer to an agent question, grounded in the task strategy.
+
+    Used by the «Вопросы агенту» AI-answer button so the operator can ask the
+    agent and get a reply (then edit/save it into the strategy).
+    """
+    from ai import call_llm
+
+    task = None
+    tid = task_id
+    if tid is None:
+        active = get_active_task()
+        tid = active.id if active else None
+    if tid is not None:
+        db = get_db_session()
+        try:
+            task = db.query(Task).filter(Task.id == tid).first()
+        finally:
+            db.close()
+    strategy = ((task.strategy or task.description) if task else "") or ""
+    system = (
+        "Ты — стратег по продажам на Upwork. Кратко и по делу ответь на вопрос "
+        "оператора, опираясь на стратегию активной задачи. Если данных не хватает — "
+        "предложи разумный вариант и уточни, чего не хватает. Отвечай на языке вопроса."
+    )
+    if strategy:
+        system += f"\n\nТекущая стратегия задачи:\n{strategy}"
+    return call_llm([
+        {"role": "system", "content": system},
+        {"role": "user", "content": question_text},
+    ])
+
+
 def render_companies_tasks():
     st.title("Компании и задачи")
 
@@ -1363,14 +1396,28 @@ def render_questions():
         for q in (paginate(open_qs, "questions_open") if open_qs else []):
             with st.container(border=True):
                 st.markdown(q.text)
+                # An AI draft generated on the previous run pre-fills the field.
+                _pending = st.session_state.pop(f"qpending_{q.id}", None)
+                if _pending is not None:
+                    st.session_state[f"ans_{q.id}"] = _pending
                 ans = st.text_area("Ответ", key=f"ans_{q.id}", height=80)
-                if st.button("Ответить", key=f"ansbtn_{q.id}"):
-                    if ans.strip():
-                        L.answer_question(db, q.id, ans.strip())
-                        st.success("Ответ сохранён, добавлен в стратегию задачи.")
+                bc1, bc2 = st.columns([1, 2])
+                with bc1:
+                    if st.button("Ответить", key=f"ansbtn_{q.id}"):
+                        if ans.strip():
+                            L.answer_question(db, q.id, ans.strip())
+                            st.success("Ответ сохранён, добавлен в стратегию задачи.")
+                            st.rerun()
+                        else:
+                            st.error("Пустой ответ.")
+                with bc2:
+                    if st.button("🤖 Ответить с помощью AI", key=f"aians_{q.id}"):
+                        with st.spinner("LLM генерирует ответ…"):
+                            try:
+                                st.session_state[f"qpending_{q.id}"] = ai_answer_for_question(q.text, q.task_id)
+                            except Exception as exc:  # noqa: BLE001
+                                st.session_state[f"qpending_{q.id}"] = f"[Ошибка LLM: {exc}]"
                         st.rerun()
-                    else:
-                        st.error("Пустой ответ.")
                 edit_delete_controls(
                     f"q_{q.id}", q.text,
                     on_save=lambda v, qid=q.id: update_row(_AQ, qid, text=v),
