@@ -37,21 +37,37 @@ def _open_context_with_heal(p, profile_dir, headless):
     a stale singleton lock, making launch hang until timeout. We catch that, clean
     up (scoped to THIS profile, never the user's personal browser), and retry.
     """
+    import time
+
     from upwork_connect import open_context
 
     try:
         return open_context(p, profile_dir, headless=headless)
-    except Exception as first:  # noqa: BLE001 — typically a launch Timeout on a locked profile
+    except Exception as first:  # noqa: BLE001 — typically a launch Timeout/TargetClosed on a locked profile
+        # Step 1: profile-scoped self-heal (kill the profile process tree + stale locks).
         try:
             from browser_cleanup import cleanup_profile
 
             cleanup_profile(profile_dir)
+            time.sleep(2.5)  # let the OS release the profile
         except Exception:  # noqa: BLE001
             pass
         try:
             return open_context(p, profile_dir, headless=headless)
         except Exception:  # noqa: BLE001
-            raise first
+            pass
+        # Step 2: nuclear — Edge background mode respawns a profile holder that a
+        # scoped kill can't outrun; kill ALL Edge (matches the operator workflow).
+        try:
+            from browser_cleanup import kill_all_browsers, kill_all_on_stuck_enabled
+
+            if kill_all_on_stuck_enabled():
+                kill_all_browsers()
+                time.sleep(2.5)
+                return open_context(p, profile_dir, headless=headless)
+        except Exception:  # noqa: BLE001
+            pass
+        raise first
 
 
 @contextmanager

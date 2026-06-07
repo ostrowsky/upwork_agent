@@ -38,12 +38,34 @@ def test_open_context_retries_after_heal(monkeypatch, tmp_path):
     assert calls["heal"] == 1
 
 
+def test_open_context_escalates_to_kill_all(monkeypatch, tmp_path):
+    """Scoped heal fails twice → nuclear kill-all → third attempt succeeds."""
+    calls = {"open": 0, "killall": 0}
+
+    def fake_open(p, profile_dir, headless):
+        calls["open"] += 1
+        if calls["open"] < 3:
+            raise RuntimeError("TargetClosed: profile held")
+        return "CTX"
+
+    monkeypatch.setattr("upwork_connect.open_context", fake_open)
+    monkeypatch.setattr(browser_cleanup, "cleanup_profile", lambda d: {"killed": 0, "removed_locks": 0})
+    monkeypatch.setattr(browser_cleanup, "kill_all_on_stuck_enabled", lambda: True)
+    monkeypatch.setattr(browser_cleanup, "kill_all_browsers",
+                        lambda: calls.__setitem__("killall", calls["killall"] + 1) or 3)
+
+    ctx = browser._open_context_with_heal(object(), tmp_path, headless=True)
+    assert ctx == "CTX"
+    assert calls["open"] == 3 and calls["killall"] == 1
+
+
 def test_open_context_reraises_first_error_if_retry_fails(monkeypatch, tmp_path):
     def always_fail(p, profile_dir, headless):
         raise RuntimeError("original launch error")
 
     monkeypatch.setattr("upwork_connect.open_context", always_fail)
     monkeypatch.setattr(browser_cleanup, "cleanup_profile", lambda d: {"killed": 0, "removed_locks": 0})
+    monkeypatch.setattr(browser_cleanup, "kill_all_on_stuck_enabled", lambda: False)  # no nuclear
 
     try:
         browser._open_context_with_heal(object(), tmp_path, headless=True)
