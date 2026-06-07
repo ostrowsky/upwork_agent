@@ -70,18 +70,30 @@ def kill_profile_processes(profile_dir: str | Path) -> int:
         return 0
 
 
+def channel_process_name() -> str:
+    """Process name of the browser the AGENT drives (NOT the user's daily browser).
+
+    Default msedge — the whole point of the msedge channel is to not collide with
+    a daily Google Chrome, so the nuclear kill must NOT touch chrome unless the
+    agent itself is configured to use chrome.
+    """
+    channel = os.getenv("UPWORK_BROWSER_CHANNEL", "msedge").strip().lower() or "msedge"
+    return {"msedge": "msedge", "chrome": "chrome", "chromium": "chrome"}.get(channel, "msedge")
+
+
 def kill_all_browsers() -> int:
-    """Last-resort: kill EVERY msedge/chrome process (closes the user's browser too).
+    """Last-resort: kill every process of the AGENT's browser channel only.
 
     Edge 'startup boost'/background mode respawns a profile holder that a
-    profile-scoped kill can't outrun, and ANY live Edge can wedge a persistent
-    launch. The operator workflow already force-closes all Edge before agent
-    runs, so this matches reality. Windows-only; no-op elsewhere.
+    profile-scoped kill can't outrun, so we kill all of THAT channel's processes
+    (e.g. all msedge) — but never the user's other browser (e.g. Chrome).
+    Windows-only; no-op elsewhere.
     """
     if not sys.platform.startswith("win"):
         return 0
+    proc = channel_process_name()
     ps = (
-        "$n=0; Get-Process msedge,chrome -ErrorAction SilentlyContinue | "
+        f"$n=0; Get-Process {proc} -ErrorAction SilentlyContinue | "
         "ForEach-Object { try { Stop-Process -Id $_.Id -Force -ErrorAction Stop; $n++ } catch {} }; "
         "Write-Output $n"
     )

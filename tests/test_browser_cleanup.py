@@ -9,6 +9,17 @@ import browser  # noqa: E402
 import browser_cleanup  # noqa: E402
 
 
+def test_channel_process_name_default_msedge_not_chrome(monkeypatch):
+    monkeypatch.delenv("UPWORK_BROWSER_CHANNEL", raising=False)
+    assert browser_cleanup.channel_process_name() == "msedge"  # never kills Chrome by default
+    monkeypatch.setenv("UPWORK_BROWSER_CHANNEL", "msedge")
+    assert browser_cleanup.channel_process_name() == "msedge"
+    monkeypatch.setenv("UPWORK_BROWSER_CHANNEL", "chrome")
+    assert browser_cleanup.channel_process_name() == "chrome"
+    monkeypatch.setenv("UPWORK_BROWSER_CHANNEL", "chromium")
+    assert browser_cleanup.channel_process_name() == "chrome"  # bundled chromium runs as chrome.exe
+
+
 def test_remove_stale_locks(tmp_path):
     (tmp_path / "SingletonLock").write_text("x")
     (tmp_path / "lockfile").write_text("x")
