@@ -19,6 +19,9 @@ ACTION_SPECS = [
     ("draft_client_reply", "Сгенерировать черновик ответа клиенту", ["client"]),
     ("generate_case", "Сгенерировать кейс-вложение под вакансию", ["job_id"]),
     ("send_report", "Сформировать и отправить дневной отчёт", []),
+    ("import_jobs", "Импортировать вакансии из ленты Upwork (браузер)", []),
+    ("search_jobs", "Найти вакансии по ключевым словам и импортировать (браузер)", ["query"]),
+    ("import_messages", "Импортировать переписку (инбокс) с Upwork (браузер)", []),
 ]
 ACTION_NAMES = {a[0] for a in ACTION_SPECS}
 
@@ -75,6 +78,23 @@ def select_action(user_msg: str, history, context: str, llm) -> dict:
 # --------------------------------------------------------------------------
 # Action implementations (safe: no browser, nothing irreversible/outward-facing)
 # --------------------------------------------------------------------------
+
+def _run_browser(fn):
+    """Run a browser op under the cross-process lock (so it's safe even while the
+    worker runs). Self-heal of a wedged Edge profile happens inside browser_page().
+
+    Returns ("busy", None) if another process holds the lock, else ("ok", result).
+    """
+    from browser_lock import is_busy, acquire, release
+
+    if is_busy():
+        return "busy", None
+    acquire("agent-chat")
+    try:
+        return "ok", fn()
+    finally:
+        release()
+
 
 def _resolve_client(db, ref):
     from database import Client
@@ -140,6 +160,46 @@ def run_action(name: str, args: dict, task_id, db=None) -> dict:
             r = send_report(task_id=task_id, db=db)
             return {"ok": True, "summary": f"Отчёт сформирован. Доставка: telegram={r['telegram']}, "
                                            f"discord={r['discord']}."}
+
+        # --- Browser actions (cross-process lock + self-heal) ---
+        if name == "import_jobs":
+            if task_id is None:
+                return {"ok": False, "summary": "Нет активной задачи — выбери её в «Компании и задачи»."}
+            from jobs import ingest_from_upwork
+
+            st_, r = _run_browser(lambda: ingest_from_upwork(task_id))
+            if st_ == "busy":
+                return {"ok": False, "summary": "Браузер занят (worker/др. операция). Повтори позже."}
+            if r.get("ok"):
+                return {"ok": True, "summary": f"Импорт ленты: добавлено {r['added']}, дублей "
+                                               f"{r['skipped_dup']} ({r.get('reason', '')})."}
+            return {"ok": False, "summary": f"Не удалось импортировать ленту: {r.get('reason')}."}
+        if name == "search_jobs":
+            if task_id is None:
+                return {"ok": False, "summary": "Нет активной задачи — выбери её в «Компании и задачи»."}
+            query = str(args.get("query") or "").strip()
+            if not query:
+                return {"ok": False, "summary": "Не указан поисковый запрос (query)."}
+            from jobs import ingest_search
+
+            st_, r = _run_browser(lambda: ingest_search(query, task_id))
+            if st_ == "busy":
+                return {"ok": False, "summary": "Браузер занят (worker/др. операция). Повтори позже."}
+            if r.get("ok"):
+                return {"ok": True, "summary": f"Поиск «{query}»: добавлено {r['added']}, дублей "
+                                               f"{r['skipped_dup']} ({r.get('reason', '')})."}
+            return {"ok": False, "summary": f"Поиск не удался: {r.get('reason')}."}
+        if name == "import_messages":
+            from messages import import_messages as _imp
+
+            st_, r = _run_browser(lambda: _imp(max_rooms=int(args.get("count") or 10)))
+            if st_ == "busy":
+                return {"ok": False, "summary": "Браузер занят (worker/др. операция). Повтори позже."}
+            if r.get("ok"):
+                return {"ok": True, "summary": f"Инбокс: диалогов {r.get('rooms', 0)}, новых сообщений "
+                                               f"{r.get('imported', 0)} (см. «Клиенты»)."}
+            return {"ok": False, "summary": f"Не удалось импортировать инбокс: {r.get('reason')}."}
+
         return {"ok": False, "summary": f"Неизвестный инструмент: {name}."}
     except Exception as e:  # noqa: BLE001 — surface the error to the operator, don't crash the chat
         return {"ok": False, "summary": f"Ошибка инструмента {name}: {type(e).__name__}: {e}"}
