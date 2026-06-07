@@ -1474,18 +1474,46 @@ def process_agent_message(tid, prompt) -> str:
             hist = hist[:-1]  # `prompt` is appended separately by select_action
         with st.spinner("Агент думает…"):
             decision = agent_tools.select_action(prompt, hist, build_agent_chat_context(), call_llm)
-        reply = decision.get("reply") or ""
         action = decision.get("action", "none")
-        if action and action != "none":
-            with st.spinner(f"Выполняю: {action}… (браузерные команды открывают Edge на ~30–60с)"):
-                res = agent_tools.run_action(action, decision.get("args", {}), tid)
-            mark = "✅" if res.get("ok") else "⚠️"
-            reply = (reply + "\n\n" if reply else "") + f"🔧 {mark} {res['summary']}"
-        return reply or "(пустой ответ)"
+
+        if not action or action == "none":
+            # Plain Q&A — use the selector's reply, or compose one if it was empty.
+            return decision.get("reply") or _agent_answer(tid, prompt)
+
+        # Tool path: run the action, THEN reason over the (refreshed) result to
+        # actually answer the user's intent — not just dump the tool's summary.
+        with st.spinner(f"Выполняю: {action}… (браузерные команды открывают Edge на ~30–60с)"):
+            res = agent_tools.run_action(action, decision.get("args", {}), tid)
+        mark = "✅" if res.get("ok") else "⚠️"
+        with st.spinner("Формирую ответ…"):
+            answer = _agent_answer(tid, prompt, tool_note=f"{action} → {res['summary']}")
+        return f"{answer}\n\n🔧 {mark} {res['summary']}"
     except Exception as exc:  # noqa: BLE001 — never let the chat page crash
         import traceback
 
         return f"⚠️ Не удалось обработать сообщение: {type(exc).__name__}: {exc}\n\n```\n{traceback.format_exc()[-600:]}\n```"
+
+
+def _agent_answer(tid, prompt, tool_note=""):
+    """Plain grounded answer (no tool selection) — used for Q&A and post-tool reasoning."""
+    from ai import call_llm
+
+    system = (
+        "Ты — AI-агент по продажам на Upwork и ассистент оператора студии геймдева. "
+        "Отвечай конкретно и по делу, на языке оператора, опираясь на контекст ниже "
+        "(стратегия, метрики, вакансии и исходы, кейсы, переписка). "
+    )
+    if tool_note:
+        system += f"\n\nТолько что выполнено действие: {tool_note}. Учитывай его результат в ответе."
+    system += "\n\n=== КОНТЕКСТ ===\n" + build_agent_chat_context()
+
+    messages = [{"role": "system", "content": system}]
+    hist = get_agent_chat(tid)
+    for m in hist[-CHAT_HISTORY_WINDOW:]:
+        messages.append({"role": m.role, "content": m.content})
+    if not (hist and hist[-1].role == "user" and hist[-1].content == prompt):
+        messages.append({"role": "user", "content": prompt})
+    return call_llm(messages)
 
 
 def render_agent_chat():
