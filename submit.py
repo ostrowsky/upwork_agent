@@ -86,13 +86,22 @@ def _fmt(v: float) -> str:
 def compute_hourly_rate(job: Job) -> str | None:
     """Per-job hourly bid. Priority: explicit override → budget bounds → None.
 
-    Strategy for ranges (BID_HOURLY_STRATEGY): max (default) / mid / min.
-    None means leave Upwork's pre-filled profile rate untouched.
+    The bid NEVER exceeds the client's stated hourly max — bidding above the
+    posted range looks like we ignored the budget and hurts the proposal. So an
+    explicit BID_HOURLY_RATE is capped to the job's upper bound when the job
+    posts a range. Strategy for ranges (BID_HOURLY_STRATEGY): max (default) /
+    mid / min. None means leave Upwork's pre-filled profile rate untouched.
     """
+    bounds = parse_hourly_bounds(job.budget)
     override = bid_hourly_rate()
     if override:
-        return override
-    bounds = parse_hourly_bounds(job.budget)
+        try:
+            val = float(str(override).replace("$", "").replace(",", "").strip())
+        except ValueError:
+            return override  # non-numeric override → pass through verbatim
+        if bounds:
+            val = min(val, bounds[1])  # cap at the client's stated max
+        return _fmt(val)
     if not bounds:
         return None
     lo, hi = bounds

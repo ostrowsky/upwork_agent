@@ -44,9 +44,17 @@ def test_compute_hourly_strategy(monkeypatch):
     assert submit.compute_hourly_rate(job) == "22.50"
 
 
-def test_compute_hourly_override_wins(monkeypatch):
+def test_compute_hourly_override_capped_to_job_max(monkeypatch):
+    # An override above the client's posted max is capped to the max (never bid over budget).
     monkeypatch.setenv("BID_HOURLY_RATE", "50")
-    assert submit.compute_hourly_rate(_job("Hourly: $15-$30")) == "50"
+    assert submit.compute_hourly_rate(_job("Hourly: $15-$30")) == "30"
+    # The #77 case: $35 override on a $12-$30 job → $30.
+    assert submit.compute_hourly_rate(_job("Hourly: $12-$30")) == "30"
+    # An override within range is used as-is.
+    monkeypatch.setenv("BID_HOURLY_RATE", "20")
+    assert submit.compute_hourly_rate(_job("Hourly: $15-$30")) == "20"
+    # No posted range → override passes through (nothing to cap against).
+    assert submit.compute_hourly_rate(_job("Hourly")) == "20"
 
 
 def test_compute_hourly_no_bounds_returns_none():
