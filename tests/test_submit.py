@@ -87,15 +87,55 @@ def test_submit_ready_dry_run_caps_per_run(db, monkeypatch):
         db.add(Proposal(job_id=i, status="DRAFT", content="hello"))
     db.commit()
 
-    # stub the browser layer so no real submit happens; count invocations
+    # Stub the browser layer: one fake context for the whole batch, count per-job calls.
+    import contextlib
+
+    import browser
+
+    @contextlib.contextmanager
+    def fake_browser_page():
+        yield object()
+
     calls = {"n": 0}
 
-    def fake_submit(job, proposal, db, dry_run=None):
+    def fake_apply(page, url, job, proposal, db, dry_run):
         calls["n"] += 1
         return {"ok": True, "submitted": False, "dry_run": True, "reason": "stub", "connects": None}
 
-    monkeypatch.setattr(submit, "submit_proposal", fake_submit)
+    monkeypatch.setattr(browser, "browser_page", fake_browser_page)
+    monkeypatch.setattr(submit, "_apply_on_page", fake_apply)
     res = submit.submit_ready(task_id=1, db=db, dry_run=True)
-    assert calls["n"] == 1  # per-run cap of 1 honored
+    assert calls["n"] == 1  # per-run cap of 1 honored → one apply call
     assert res["dry_run"] == 1
     assert res["total"] == 1
+
+
+def test_submit_many_opens_one_browser_for_batch(db, monkeypatch):
+    monkeypatch.setenv("AUTO_SUBMIT", "0")
+    for i in range(1, 4):
+        db.add(Job(id=i, title=f"j{i}", description="d", status="PROPOSAL_DRAFTED",
+                   upwork_job_id=f"021{i:015d}", task_id=1))
+        db.add(Proposal(job_id=i, status="DRAFT", content="hello"))
+    db.commit()
+
+    import contextlib
+
+    import browser
+
+    opens = {"n": 0}
+
+    @contextlib.contextmanager
+    def fake_browser_page():
+        opens["n"] += 1
+        yield object()
+
+    monkeypatch.setattr(browser, "browser_page", fake_browser_page)
+    monkeypatch.setattr(submit, "_apply_on_page",
+                        lambda *a, **k: {"ok": True, "submitted": False, "dry_run": True,
+                                         "reason": "stub", "connects": None})
+
+    items = [(db.query(Job).filter(Job.id == i).first(),
+              db.query(Proposal).filter(Proposal.job_id == i).first()) for i in (1, 2, 3)]
+    r = submit.submit_many(items, db, dry_run=True)
+    assert opens["n"] == 1   # ONE browser session for the whole batch (was N before)
+    assert r["total"] == 3 and r["dry_run"] == 3

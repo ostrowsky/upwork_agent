@@ -521,51 +521,101 @@ def _apply_on_page(page, url: str, job: Job, proposal: Proposal, db, dry_run: bo
             "attached_verified": attach.get("verified", 0)}
 
 
+def submit_many(items, db, dry_run: bool | None = None, progress=None,
+                cap: int | None = None, already: int = 0,
+                stop_after_insufficient: int | None = None) -> dict:
+    """Submit a batch of (job, proposal) over ONE browser context (≈4× faster, fewer wedges).
+
+    Reuses a single Edge session and navigates between apply forms instead of
+    opening/closing the browser per job. Honors the daily cap (when not dry-run)
+    and can stop early after N consecutive 'insufficient connects'.
+
+    Returns {results: [per-job dicts], submitted, dry_run, errors, skipped_cap, total, last_reason}.
+    """
+    if dry_run is None:
+        dry_run = not auto_submit_enabled()
+    cap = daily_submit_limit() if cap is None else cap
+
+    results = []
+    ready = []
+    for job, proposal in items:
+        ok, reason = can_submit(job, proposal)
+        if ok:
+            ready.append((job, proposal))
+        else:
+            results.append({"job_id": getattr(job, "id", None), "ok": False, "submitted": False,
+                            "dry_run": dry_run, "reason": reason, "connects": None})
+
+    if ready:
+        from browser import browser_page
+
+        submitted_live = insufficient = 0
+        try:
+            with browser_page() as page:
+                try:
+                    for i, (job, proposal) in enumerate(ready, 1):
+                        if not dry_run and already + submitted_live >= cap:
+                            results.append({"job_id": job.id, "ok": False, "submitted": False,
+                                            "dry_run": dry_run, "reason": "daily submit cap reached",
+                                            "connects": None, "skipped_cap": True})
+                            continue
+                        res = _apply_on_page(page, build_apply_url(job), job, proposal, db, dry_run)
+                        res.setdefault("job_id", job.id)
+                        results.append(res)
+                        if res.get("submitted"):
+                            submitted_live += 1
+                        if "insufficient connects" in (res.get("reason") or "").lower():
+                            insufficient += 1
+                            if stop_after_insufficient and insufficient >= stop_after_insufficient:
+                                break
+                        else:
+                            insufficient = 0
+                        if progress:
+                            progress(i, len(ready), f"#{job.id} {(res.get('reason') or '')[:40]}")
+                finally:
+                    if keep_browser_open():
+                        try:
+                            input("[submit] Браузер открыт. Осмотри страницы, затем нажми Enter…")
+                        except (EOFError, OSError):
+                            pass
+        except ImportError:
+            results.append({"ok": False, "submitted": False, "dry_run": dry_run,
+                            "reason": "playwright missing", "connects": None})
+        except Exception as e:  # noqa: BLE001 — batch-level browser failure
+            results.append({"ok": False, "submitted": False, "dry_run": dry_run,
+                            "reason": f"{type(e).__name__}: {e}", "connects": None})
+
+    submitted = sum(1 for r in results if r.get("submitted"))
+    dry = sum(1 for r in results if r.get("dry_run") and r.get("ok"))
+    skipped = sum(1 for r in results if r.get("skipped_cap"))
+    errors = sum(1 for r in results
+                 if not r.get("submitted") and not (r.get("dry_run") and r.get("ok"))
+                 and not r.get("skipped_cap"))
+    return {"results": results, "submitted": submitted, "dry_run": dry, "errors": errors,
+            "skipped_cap": skipped, "total": len(items),
+            "last_reason": results[-1].get("reason", "") if results else ""}
+
+
 def submit_proposal(job: Job, proposal: Proposal, db, dry_run: bool | None = None) -> dict:
-    """Set up the browser, then drive the apply form via _apply_on_page.
+    """Submit a single proposal (thin wrapper over submit_many).
 
     Returns {ok, submitted, dry_run, reason, connects}. On a real send, marks
     proposal SENT (+ submitted_at, connects_spent) and job SENT.
     """
-    if dry_run is None:
-        dry_run = not auto_submit_enabled()
-
-    ok, reason = can_submit(job, proposal)
-    if not ok:
-        return {"ok": False, "submitted": False, "dry_run": dry_run, "reason": reason, "connects": None}
-
-    url = build_apply_url(job)
-
-    from browser import browser_page
-
-    try:
-        with browser_page() as page:
-            try:
-                return _apply_on_page(page, url, job, proposal, db, dry_run)
-            finally:
-                # Hold the page open (debug) BEFORE browser_page closes the context.
-                if keep_browser_open():
-                    try:
-                        input("[submit] Браузер открыт. Осмотри страницу, затем нажми Enter для закрытия…")
-                    except (EOFError, OSError):
-                        pass
-    except ImportError:
-        return {"ok": False, "submitted": False, "dry_run": dry_run, "reason": "playwright missing", "connects": None}
-    except Exception as e:  # noqa: BLE001
-        return {"ok": False, "submitted": False, "dry_run": dry_run,
-                "reason": f"{type(e).__name__}: {e}", "connects": None}
+    r = submit_many([(job, proposal)], db, dry_run=dry_run)
+    if r["results"]:
+        return r["results"][0]
+    return {"ok": False, "submitted": False,
+            "dry_run": (not auto_submit_enabled()) if dry_run is None else dry_run,
+            "reason": "no result", "connects": None}
 
 
 def submit_ready(task_id: int | None, db=None, dry_run: bool | None = None,
                  limit: int | None = None, progress=None) -> dict:
-    """Submit drafted proposals for PROPOSAL_DRAFTED jobs, honoring the daily cap."""
+    """Submit drafted proposals for PROPOSAL_DRAFTED jobs (one browser, daily cap)."""
     owns = db is None
     db = db or get_db_session()
-    submitted = dry = skipped = errors = 0
-    last_reason = ""
-    cap = daily_submit_limit()
     try:
-        already = submissions_today(db)
         per_run = submit_per_run() if limit is None else limit
         q = db.query(Job).filter(Job.status == "PROPOSAL_DRAFTED")
         if task_id is not None:
@@ -574,29 +624,19 @@ def submit_ready(task_id: int | None, db=None, dry_run: bool | None = None,
         if per_run is not None and per_run >= 0:
             jobs = jobs[:per_run]
 
-        total = len(jobs)
-        for i, job in enumerate(jobs, 1):
+        items = []
+        for job in jobs:
             proposal = (
                 db.query(Proposal)
                 .filter(Proposal.job_id == job.id, Proposal.status == "DRAFT")
                 .first()
             )
-            effective_dry = (not auto_submit_enabled()) if dry_run is None else dry_run
-            if not effective_dry and already + submitted >= cap:
-                skipped += 1
-                continue
-            res = submit_proposal(job, proposal, db, dry_run=dry_run)
-            last_reason = res.get("reason", "")
-            if res["submitted"]:
-                submitted += 1
-            elif res["dry_run"] and res["ok"]:
-                dry += 1
-            else:
-                errors += 1
-            if progress:
-                progress(i, total, f"#{job.id} {last_reason[:40]}")
-        return {"submitted": submitted, "dry_run": dry, "skipped_cap": skipped,
-                "errors": errors, "total": total, "last_reason": last_reason}
+            items.append((job, proposal))
+
+        r = submit_many(items, db, dry_run=dry_run, progress=progress,
+                        cap=daily_submit_limit(), already=submissions_today(db))
+        return {"submitted": r["submitted"], "dry_run": r["dry_run"], "skipped_cap": r["skipped_cap"],
+                "errors": r["errors"], "total": r["total"], "last_reason": r["last_reason"]}
     finally:
         if owns:
             db.close()

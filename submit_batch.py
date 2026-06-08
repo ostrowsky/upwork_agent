@@ -14,7 +14,7 @@ cover letter + rate, attaches the generated case PDF, and submits.
 import sys
 
 from database import get_db_session, Job, Proposal
-from submit import submit_proposal, auto_submit_enabled
+from submit import submit_many, auto_submit_enabled
 
 
 def main() -> int:
@@ -26,11 +26,12 @@ def main() -> int:
         return 1
 
     live = auto_submit_enabled() and not dry
-    print(f"[batch] mode={'LIVE (real submit!)' if live else 'DRY-RUN'} jobs={ids}", flush=True)
+    print(f"[batch] mode={'LIVE (real submit!)' if live else 'DRY-RUN'} jobs={ids} "
+          f"(one browser session)", flush=True)
 
     db = get_db_session()
-    sent = errors = insufficient = 0
     try:
+        items = []
         for jid in ids:
             job = db.query(Job).filter(Job.id == jid).first()
             if job is None:
@@ -44,21 +45,21 @@ def main() -> int:
                 .filter(Proposal.job_id == jid, Proposal.status == "DRAFT")
                 .first()
             )
-            print(f"#{jid} '{(job.title or '')[:45]}' → submitting…", flush=True)
-            res = submit_proposal(job, proposal, db, dry_run=(True if dry else None))
-            reason = (res.get("reason") or "")
-            print(f"   result: submitted={res.get('submitted')} connects={res.get('connects')} "
-                  f"attached={res.get('attached')}/{res.get('attached_verified')} | {reason[:90]}", flush=True)
-            if res.get("submitted"):
-                sent += 1
-            elif "insufficient connects" in reason.lower():
-                insufficient += 1
-                if insufficient >= 2:
-                    print("[batch] connects exhausted — stopping.", flush=True)
-                    break
-            elif not res.get("dry_run"):
-                errors += 1
-        print(f"[batch] done: sent={sent}, errors={errors}, insufficient_stops={insufficient}", flush=True)
+            items.append((job, proposal))
+
+        def prog(i, total, label):
+            print(f"  [{i}/{total}] {label}", flush=True)
+
+        # One browser for the whole batch; stop after 2 consecutive insufficient-connects.
+        r = submit_many(items, db, dry_run=(True if dry else None),
+                        progress=prog, stop_after_insufficient=2)
+        for res in r["results"]:
+            print(f"#{res.get('job_id')}: submitted={res.get('submitted')} "
+                  f"connects={res.get('connects')} "
+                  f"attached={res.get('attached')}/{res.get('attached_verified')} | "
+                  f"{(res.get('reason') or '')[:90]}", flush=True)
+        print(f"[batch] done: sent={r['submitted']}, errors={r['errors']}, "
+              f"skipped_cap={r['skipped_cap']} (of {r['total']})", flush=True)
         return 0
     finally:
         db.close()
