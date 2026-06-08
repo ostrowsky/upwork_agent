@@ -9,7 +9,7 @@ without a browser is a non-goal). The LLM/draft logic here is unit-testable.
 """
 from __future__ import annotations
 
-from database import get_db_session, Client, ClientMessage
+from database import get_db_session, Client, ClientMessage  # noqa: F401 — get_db_session is a test monkeypatch seam
 
 
 CHAT_HISTORY_WINDOW = 16

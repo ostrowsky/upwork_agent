@@ -1549,8 +1549,6 @@ def render_agent_chat():
                 st.markdown(f"- {q.text}")
             st.caption("Ответь на них прямо в чате ниже.")
 
-    import agent_tools
-
     with st.expander("🔧 Что умеет агент (команды)"):
         st.markdown(
             "Можно попросить выполнить действие, например:\n"

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import (
@@ -33,6 +33,14 @@ SessionLocal = sessionmaker(
 Base = declarative_base()
 
 
+def _utcnow() -> datetime:
+    """Timezone-aware UTC 'now' as a naive value (matches SQLite's naive storage).
+
+    Replaces the deprecated datetime.utcnow() while keeping comparisons naive-vs-naive.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 class Company(Base):
     __tablename__ = "companies"
 
@@ -42,8 +50,8 @@ class Company(Base):
     upwork_email = Column(String(255), nullable=True)
     notes = Column(Text, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow)
 
     tasks = relationship("Task", back_populates="company")
 
@@ -60,8 +68,8 @@ class Task(Base):
     strategy = Column(Text, nullable=True)
     is_active = Column(Integer, default=0)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow)
 
     company = relationship("Company", back_populates="tasks")
     messages = relationship("TaskMessage", back_populates="task")
@@ -77,7 +85,7 @@ class TaskMessage(Base):
     role = Column(String(50), nullable=False)  # user | assistant
     content = Column(Text, nullable=False)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
     task = relationship("Task", back_populates="messages")
 
@@ -108,8 +116,8 @@ class Job(Base):
     loss_reason = Column(Text, nullable=True)
     revenue = Column(Integer, nullable=True)  # USD booked on WIN
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow)
 
     proposals = relationship("Proposal", back_populates="job")
 
@@ -134,8 +142,8 @@ class CaseStudy(Base):
     # Job this synthetic case was generated for (NULL for manual base cases).
     job_id = Column(Integer, ForeignKey("jobs.id"), nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow)
 
 
 class Proposal(Base):
@@ -152,8 +160,8 @@ class Proposal(Base):
     connects_spent = Column(Integer, nullable=True)
     submitted_at = Column(DateTime, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow)
 
     job = relationship("Job", back_populates="proposals")
 
@@ -171,8 +179,8 @@ class Client(Base):
     notes = Column(Text, nullable=True)
     ai_enabled = Column(Integer, default=1)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow)
 
     messages = relationship("ClientMessage", back_populates="client")
 
@@ -189,7 +197,7 @@ class ClientMessage(Base):
     ai_draft = Column(Text, nullable=True)
     external_id = Column(String(255), nullable=True, index=True)  # Upwork storyId
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
     client = relationship("Client", back_populates="messages")
 
@@ -202,7 +210,7 @@ class AgentChatMessage(Base):
     task_id = Column(Integer, ForeignKey("tasks.id"), nullable=True)
     role = Column(String(20), nullable=False)  # user | assistant
     content = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
 
 class AgentQuestion(Base):
@@ -216,8 +224,8 @@ class AgentQuestion(Base):
     answer = Column(Text, nullable=True)
     status = Column(String(50), default="open")  # open | answered
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
+    updated_at = Column(DateTime, default=_utcnow)
 
 
 class DailyReport(Base):
@@ -229,7 +237,7 @@ class DailyReport(Base):
     metrics_json = Column(Text, nullable=True)
     text = Column(Text, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
 
 def _migrate_sqlite():

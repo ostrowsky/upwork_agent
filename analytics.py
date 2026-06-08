@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 
-from database import get_db_session, Job, Proposal, Client, ClientMessage, CaseStudy
+from database import get_db_session, Job, Proposal, ClientMessage, CaseStudy
 
 
 def compute_metrics(db, task_id: int | None = None) -> dict:

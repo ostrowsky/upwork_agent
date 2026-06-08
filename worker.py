@@ -376,7 +376,7 @@ def run(interval: int = DEFAULT_INTERVAL, once: bool = False) -> int:
         log.warning("startup self-heal skipped: %s", e)
 
     while _running:
-        status = safe_tick()
+        safe_tick()
         if once:
             break
         for _ in range(interval):  # 1s slices → responsive Ctrl+C

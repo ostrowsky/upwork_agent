@@ -107,7 +107,7 @@ def save_report(db, metrics: dict, text: str, day: str | None = None, task_id: i
         db.add(rep)
     rep.metrics_json = json.dumps(metrics, ensure_ascii=False)
     rep.text = text
-    rep.created_at = datetime.utcnow()
+    rep.created_at = datetime.now(timezone.utc).replace(tzinfo=None)
     db.commit()
     db.refresh(rep)
     return rep

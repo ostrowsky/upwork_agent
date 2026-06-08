@@ -114,12 +114,7 @@ APPLY_ATTACH_INPUT = (
 
 # Per-proposal connects cost — anchor on the Send button, NOT the account balance.
 CONNECTS_REGEX = r"Send for\s+(\d+)\s+Connects"
-# Account connects balance, as shown on the apply page (gap #4).
-CONNECTS_BALANCE_REGEX = (
-    r"(\d+)\s+Connects available"
-    r"|have\s+(\d+)\s+Connects remaining"
-    r"|Remaining balance:\s*(\d+)\s+Connects"
-)
+# Account connects balance parsing lives in connects.py (parse_connects_balance).
 
 # ---------------------------------------------------------------------------
 # Messenger compose box (best-effort; tune via msg_compose_debug dump).

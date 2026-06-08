@@ -12,8 +12,6 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-import upwork_selectors as S
-
 BALANCE_PATH = Path(__file__).resolve().parent / "data" / "connects_balance.json"
 
 

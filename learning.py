@@ -7,7 +7,7 @@ proposals improve.
 """
 from __future__ import annotations
 
-from database import get_db_session, Job, Task, AgentQuestion
+from database import get_db_session, Job, Task, AgentQuestion  # noqa: F401 — get_db_session is a test monkeypatch seam
 
 
 OUTCOMES = {"REPLIED", "INTERVIEW", "WIN", "LOST"}
