@@ -124,8 +124,15 @@ def generate_proposal(job: Job, task: Task | None, db, all_cases: list | None = 
 
     import os as _os
 
-    selected = rank_cases(job, all_cases, top_n=2,
+    top_n = int(_os.getenv("CASE_TOP_N", "2"))
+    selected = rank_cases(job, all_cases, top_n=top_n,
                           min_score=int(_os.getenv("CASE_MIN_SCORE", "4")))
+    # Always cite the case fabricated specifically for THIS job (it IS the attached
+    # PDF) so the cover letter and the attachment stay in sync.
+    own = [c for c in all_cases
+           if getattr(c, "synthetic", 0) and getattr(c, "job_id", None) == job.id]
+    if own:
+        selected = (own[:1] + [c for c in selected if c.id != own[0].id])[:top_n]
     # When the base has no relevant case and AUTO_GEN_CASE=1, fabricate one tailored
     # to this job (synthetic, with a PDF/PNG attachment) so the proof block is strong.
     if not selected and _os.getenv("AUTO_GEN_CASE", "0").strip().lower() in ("1", "true", "yes"):

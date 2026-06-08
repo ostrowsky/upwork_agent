@@ -148,7 +148,7 @@ def run_action(name: str, args: dict, task_id, db=None) -> dict:
                                            f"(см. «Клиенты»):\n{text[:400]}"}
         if name == "generate_case":
             from cases import generate_case_for_job
-            from database import Job, Task
+            from database import Job, Proposal, Task
 
             job = db.query(Job).filter(Job.id == int(args.get("job_id"))).first() if args.get("job_id") else None
             if job is None:
@@ -156,8 +156,18 @@ def run_action(name: str, args: dict, task_id, db=None) -> dict:
             task = db.query(Task).filter(Task.id == job.task_id).first() if job.task_id else None
             res = generate_case_for_job(job, task, db)
             if res.get("ok"):
+                # Re-draft so the proposal proof cites the new case (if a draft exists).
+                redrafted = ""
+                if db.query(Proposal).filter(Proposal.job_id == job.id, Proposal.status == "DRAFT").first():
+                    try:
+                        from proposals import generate_proposal
+
+                        generate_proposal(job, task, db)
+                        redrafted = " Отклик перегенерирован — цитирует кейс."
+                    except Exception:  # noqa: BLE001
+                        pass
                 return {"ok": True, "summary": f"Кейс под вакансию #{job.id} готов: «{res['title']}» "
-                                               f"(PDF в «Кейсы»)."}
+                                               f"(PDF в «Кейсы»).{redrafted}"}
             return {"ok": False, "summary": f"Не удалось сгенерировать кейс: {res.get('reason')}."}
         if name == "send_report":
             from reporting import send_report

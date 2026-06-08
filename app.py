@@ -206,7 +206,20 @@ def generate_case_for_job_ui(job_id):
         if not job:
             return {"ok": False, "reason": "job missing"}
         task = db.query(Task).filter(Task.id == job.task_id).first() if job.task_id else None
-        return generate_case_for_job(job, task, db)
+        res = generate_case_for_job(job, task, db)
+        # Re-draft the proposal so its proof cites the new case (otherwise the
+        # attached PDF and the cover letter are disconnected).
+        if res.get("ok"):
+            from database import Proposal
+            from proposals import generate_proposal
+
+            if db.query(Proposal).filter(Proposal.job_id == job_id, Proposal.status == "DRAFT").first():
+                try:
+                    generate_proposal(job, task, db)
+                    res["redrafted"] = True
+                except Exception:  # noqa: BLE001
+                    res["redrafted"] = False
+        return res
     finally:
         db.close()
 

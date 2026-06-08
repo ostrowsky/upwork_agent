@@ -120,6 +120,22 @@ def test_generate_creates_draft_and_is_idempotent(db):
     assert json.loads(draft.selected_cases) == [2]
 
 
+def test_proposal_always_cites_own_synthetic_case(db):
+    """The case fabricated for THIS job (the attached PDF) must be cited in proof."""
+    job, task = _setup_job(db)
+    # A synthetic case tailored to this job — must win a slot even if another case
+    # scores higher on tokens.
+    db.add(CaseStudy(
+        id=99, title="Tailored case", niche="generic", stack="x",
+        description="made for this job", result="ok", deleted=0,
+        synthetic=1, job_id=job.id,
+    ))
+    db.commit()
+
+    res = proposals.generate_proposal(job, task, db, llm=lambda m: _FULL_JSON)
+    assert 99 in res["cases"]  # own synthetic case is always cited
+
+
 def test_generate_errors_on_bad_llm(db):
     job, task = _setup_job(db)
     res = proposals.generate_proposal(job, task, db, llm=lambda m: "garbage")

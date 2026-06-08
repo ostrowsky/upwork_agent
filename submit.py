@@ -335,7 +335,16 @@ def attachment_paths_for_job(db, job_id) -> list[str]:
             .order_by(CaseStudy.created_at.desc())
             .all()
         )
-        return [r.artifact_path for r in rows if r.artifact_path and os.path.exists(r.artifact_path)]
+        paths = []
+        attach_png = os.getenv("ATTACH_CASE_PNG", "1").strip().lower() in ("1", "true", "yes")
+        for r in rows:
+            if r.artifact_path and os.path.exists(r.artifact_path):
+                paths.append(r.artifact_path)
+                # Attach the visual infographic (PNG) alongside the PDF, if present.
+                png = os.path.splitext(r.artifact_path)[0] + ".png"
+                if attach_png and os.path.exists(png):
+                    paths.append(png)
+        return paths
     except Exception:  # noqa: BLE001 — fake/unsupported db in tests, or query error
         return []
 

@@ -24,13 +24,15 @@ def clean_text(s: str | None) -> str:
     s = unicodedata.normalize("NFKD", s)
     return s.encode("latin-1", "ignore").decode("latin-1")
 
+import os
+
 DATA_DIR = Path(__file__).resolve().parent / "data"
 ARTIFACT_DIR = DATA_DIR / "case_artifacts"
 
-# Brand-ish palette.
-_NAVY = "#0f2a43"
-_ACCENT = "#14a06b"
-_GREY = "#5b6b7b"
+# Brand palette — configurable so the studio can match its own branding.
+_NAVY = os.getenv("CASE_BRAND_PRIMARY", "#0f2a43").strip() or "#0f2a43"
+_ACCENT = os.getenv("CASE_BRAND_ACCENT", "#14a06b").strip() or "#14a06b"
+_GREY = os.getenv("CASE_BRAND_MUTED", "#5b6b7b").strip() or "#5b6b7b"
 
 
 def _derive_metrics(results: list[str]) -> list[dict]:
