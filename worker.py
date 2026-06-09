@@ -100,8 +100,8 @@ def detect_anomalies(status: dict) -> list[str]:
     if (status.get("last_draft_errors") or 0) > 0:
         a.append("draft_errors")
     sr = (status.get("last_submit_reason") or "").lower()
-    if "insufficient connects" in sr:
-        a.append("connects_low")  # agent should tell the operator to top up
+    if "insufficient connects" in sr or "boost required" in sr:
+        a.append("connects_low")  # agent should tell the operator to top up / skip boost jobs
     elif any(k in sr for k in ("error", "not found", "not confirmed")):
         a.append("submit_problem")
     return a

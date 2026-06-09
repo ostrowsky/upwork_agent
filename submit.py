@@ -298,8 +298,17 @@ def _is_insufficient_connects(text: str | None) -> bool:
     if not text:
         return False
     return bool(re.search(
-        r"more Connects needed|insufficient connects|not enough Connects|Buy Connects|Get more Connects",
+        r"more Connects needed|insufficient connects|insufficient\s+\w*\s*connects|"
+        r"not enough Connects|Buy Connects|Get more Connects|MoreConnectsNeeded|need more connects",
         text, re.IGNORECASE))
+
+
+def _is_boost_required(text: str | None) -> bool:
+    """True if the apply page is a boost flow (job needs boosting connects to send)."""
+    if not text:
+        return False
+    t = text.lower()
+    return ("boost" in t) and ("send for" not in t)
 
 
 def _read_connects_required(page) -> int | None:
@@ -454,6 +463,11 @@ def _apply_on_page(page, url: str, job: Job, proposal: Proposal, db, dry_run: bo
         if _is_insufficient_connects(balance_text):
             return {"ok": False, "submitted": False, "dry_run": False,
                     "reason": "insufficient connects — top up to submit (balance too low)",
+                    "connects": connects}
+        if _is_boost_required(balance_text):
+            return {"ok": False, "submitted": False, "dry_run": False,
+                    "reason": "boost required — this job needs a boosted proposal "
+                              "(not enough connects to boost); skip or top up",
                     "connects": connects}
         _dump_apply_debug(page)
         return {"ok": False, "submitted": False, "dry_run": False,

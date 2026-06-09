@@ -259,6 +259,29 @@ def test_live_insufficient_connects_reported_clearly():
     assert proposal.status == "DRAFT"  # not submitted
 
 
+def test_live_boost_required_reported_clearly():
+    """No Send button + a boost flow (no 'Send for') → clear 'boost required', not a vague error."""
+    job, proposal, db = _job(), _proposal(), FakeDB()
+    locs = _base_locators()
+    locs[S.APPLY_SEND_BUTTON] = FakeLocator(count=0)
+    page = FakePage(locs, body="Boost your proposal to stand out. Available Connects: 5", url=APPLY_URL)
+
+    res = submit._apply_on_page(page, APPLY_URL, job, proposal, db, dry_run=False)
+    assert res["submitted"] is False
+    assert "boost required" in res["reason"]
+    assert proposal.status == "DRAFT"
+
+
+def test_insufficient_detector_variants():
+    f = submit._is_insufficient_connects
+    assert f("insufficient Connects balance") is True
+    assert f("You need more connects") is True
+    assert f("MoreConnectsNeededModal shown") is True
+    assert f("Send for 12 Connects") is False
+    assert submit._is_boost_required("Boost your proposal") is True
+    assert submit._is_boost_required("Send for 12 Connects — Boost optional") is False  # Send present
+
+
 def test_live_missing_send_button():
     job, proposal, db = _job(), _proposal(), FakeDB()
     locs = _base_locators()
