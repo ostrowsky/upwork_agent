@@ -848,17 +848,25 @@ def render_jobs():
     from submit import auto_submit_enabled, submit_per_run
 
     live = auto_submit_enabled()
-    mode = "🔴 LIVE" if live else "🟡 DRY-RUN"
+    mode = "🔴 LIVE (реальная отправка, тратит connects)" if live else "🟡 DRY-RUN (без отправки)"
     st.caption(
-        f"Автосабмит: режим {mode}, по {submit_per_run()} за нажатие "
-        f"(AUTO_SUBMIT / SUBMIT_PER_RUN в .env). Открывает браузер — не запускай вместе с worker."
+        f"Автосабмит: режим {mode}. Свежие вакансии — первыми, один сеанс Edge на весь "
+        f"батч (вложение PDF+инфографика). Не запускай вместе с worker."
     )
-    if st.button("🚀 Автосабмит черновиков", disabled=active is None):
+    sc1, sc2 = st.columns([1, 2])
+    with sc1:
+        n_submit = st.number_input("Сколько отправить", min_value=1, max_value=10,
+                                   value=int(submit_per_run()), key="n_submit")
+    with sc2:
+        st.write("")
+        st.write("")
+        go_submit = st.button(f"🚀 Отправить {int(n_submit)} лучших черновик(ов)", disabled=active is None)
+    if go_submit:
         from submit import submit_ready
 
         bar, cb = make_progress("Автосабмит")
-        with st.spinner("Открываю Upwork и отправляю отклики…"):
-            ok, res = run_browser_op(lambda: submit_ready(active.id, progress=cb))
+        with st.spinner("Открываю Upwork и отправляю отклики (один сеанс)…"):
+            ok, res = run_browser_op(lambda: submit_ready(active.id, limit=int(n_submit), progress=cb))
         bar.empty()
         st.session_state["batchsubmitres"] = res if ok else {"submitted": 0, "errors": 0, "total": 0, "reason": "браузер занят"}
         st.rerun()

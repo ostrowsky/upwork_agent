@@ -620,7 +620,8 @@ def submit_ready(task_id: int | None, db=None, dry_run: bool | None = None,
         q = db.query(Job).filter(Job.status == "PROPOSAL_DRAFTED")
         if task_id is not None:
             q = q.filter(Job.task_id == task_id)
-        jobs = q.order_by(Job.created_at.asc()).all()
+        # Newest-first: fresh postings are still open; old ones often 302 to Proposals.
+        jobs = q.order_by(Job.created_at.desc()).all()
         if per_run is not None and per_run >= 0:
             jobs = jobs[:per_run]
 
