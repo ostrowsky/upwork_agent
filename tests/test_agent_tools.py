@@ -41,6 +41,35 @@ def test_select_action_uses_llm(monkeypatch):
     assert captured["user"] == "сделай черновики"
 
 
+def test_update_strategy_writes_canonical():
+    import types
+
+    saved = {}
+
+    class FakeTask:
+        def __init__(self): self.strategy = "old"
+
+    task = FakeTask()
+
+    class FakeDB:
+        def query(self, model): return self
+        def filter(self, *a, **k): return self
+        def first(self): return task
+        def commit(self): saved["committed"] = True
+
+    res = agent_tools.run_action("update_strategy",
+                                 {"text": "Unity, $5k–$25k, без NFT, фокус Photon"},
+                                 task_id=1, db=FakeDB())
+    assert res["ok"] is True
+    assert task.strategy == "Unity, $5k–$25k, без NFT, фокус Photon"
+    assert saved.get("committed")
+
+
+def test_update_strategy_requires_text():
+    res = agent_tools.run_action("update_strategy", {"text": ""}, task_id=1, db=object())
+    assert res["ok"] is False and "Не указан" in res["summary"]
+
+
 def test_run_action_unknown():
     res = agent_tools.run_action("nope", {}, task_id=1, db=object())
     assert res["ok"] is False and "Неизвестный" in res["summary"]

@@ -19,6 +19,8 @@ ACTION_SPECS = [
     ("draft_client_reply", "Сгенерировать черновик ответа клиенту", ["client"]),
     ("generate_case", "Сгенерировать кейс-вложение под вакансию", ["job_id"]),
     ("send_report", "Сформировать и отправить дневной отчёт", []),
+    ("update_strategy", "Обновить стратегию активной задачи (бюджет/ниша/стек/фильтры). "
+                        "В text верни ПОЛНУЮ обновлённую стратегию (смержи текущую из контекста с правкой)", ["text"]),
     ("import_jobs", "Импортировать вакансии из ленты Upwork (браузер)", []),
     ("search_jobs", "Найти вакансии по ключевым словам и импортировать (браузер)", ["query"]),
     ("import_messages", "Импортировать переписку (инбокс) с Upwork (браузер)", []),
@@ -70,7 +72,10 @@ def select_action(user_msg: str, history, context: str, llm) -> dict:
         "- ВОПРОС/СОВЕТ → action=none (ответь в reply по контексту). Маркеры: порекомендуй, посоветуй, "
         "проанализируй, оцени, сравни, объясни, какие/что/почему/сколько, стратегия.\n"
         "- ДЕЙСТВИЕ → вызови инструмент. Маркеры: найди, импортируй, сгенерируй, квалифицируй, отправь, "
-        "сделай черновик.\n"
+        "сделай черновик, синхронизируй исходы.\n"
+        "- ПРАВКА СТРАТЕГИИ (обнови/измени стратегию, подними/опусти бюджет, смени/уточни нишу или стек, "
+        "«фокус на …», «убери Unreal») → инструмент update_strategy; в args.text верни ПОЛНУЮ обновлённую "
+        "стратегию, смержив текущую из КОНТЕКСТА с правкой оператора.\n"
         "«Порекомендуй вакансии» — это НЕ поиск, это анализ уже имеющихся вакансий из контекста → action=none.\n"
         "Отвечай на языке оператора.\n\n=== КОНТЕКСТ ===\n" + context
     )
@@ -176,6 +181,19 @@ def run_action(name: str, args: dict, task_id, db=None) -> dict:
             r = send_report(task_id=task_id, db=db)
             return {"ok": True, "summary": f"Отчёт сформирован. Доставка: telegram={r['telegram']}, "
                                            f"discord={r['discord']}."}
+        if name == "update_strategy":
+            from database import Task
+
+            new = str(args.get("text") or "").strip()
+            if not new:
+                return {"ok": False, "summary": "Не указан текст стратегии."}
+            task = db.query(Task).filter(Task.id == task_id).first() if task_id else None
+            if task is None:
+                return {"ok": False, "summary": "Нет активной задачи."}
+            task.strategy = new
+            db.commit()
+            return {"ok": True, "summary": f"Стратегия задачи обновлена → «{new[:150]}». "
+                                           f"Теперь её учитывают квалификация и генерация откликов."}
 
         # --- Browser actions (cross-process lock + self-heal) ---
         if name == "import_jobs":
