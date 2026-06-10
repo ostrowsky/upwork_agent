@@ -26,6 +26,15 @@ def test_parse_balance_prefers_remaining_or_available():
     assert connects.parse_connects_balance("40 Connects available", prefer="remaining") == 40
 
 
+def test_parse_balance_page():
+    # Connects History page: "My balance\n163 Connects".
+    assert connects.parse_balance_page("My balance\n163 Connects\nBuy Connects") == 163
+    assert connects.parse_balance_page("Connects History My balance 50 Connects") == 50
+    assert connects.parse_balance_page("Your balance is 7 Connects") == 7
+    assert connects.parse_balance_page("no balance text") is None
+    assert connects.parse_balance_page(None) is None
+
+
 def test_save_and_read_balance(tmp_path, monkeypatch):
     monkeypatch.setattr(connects, "BALANCE_PATH", tmp_path / "connects_balance.json")
     assert connects.read_balance() is None

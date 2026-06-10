@@ -25,6 +25,7 @@ ACTION_SPECS = [
     ("search_jobs", "Найти вакансии по ключевым словам и импортировать (браузер)", ["query"]),
     ("import_messages", "Импортировать переписку (инбокс) с Upwork (браузер)", []),
     ("sync_outcomes", "Синхронизировать статусы/исходы откликов с Upwork: hired/declined/closed (браузер)", []),
+    ("refresh_balance", "Перечитать реальный баланс Connects со страницы Upwork (браузер)", []),
 ]
 ACTION_NAMES = {a[0] for a in ACTION_SPECS}
 
@@ -248,6 +249,15 @@ def run_action(name: str, args: dict, task_id, db=None) -> dict:
                     f"Sync: помечено SENT {r1.get('marked', 0)}; исходы — WIN {r2.get('win', 0)}, "
                     f"declined {r2.get('lost_declined', 0)}, закрыто {r2.get('lost_closed', 0)}.")}
             return {"ok": False, "summary": f"Sync исходов не удался: {r2.get('reason')}."}
+        if name == "refresh_balance":
+            from connects import fetch_balance_live
+
+            st_, r = _run_browser(fetch_balance_live)
+            if st_ == "busy":
+                return {"ok": False, "summary": "Браузер занят (worker/др. операция). Повтори позже."}
+            if r.get("ok"):
+                return {"ok": True, "summary": f"Реальный баланс Connects: {r['balance']}."}
+            return {"ok": False, "summary": f"Не удалось прочитать баланс: {r.get('reason')}."}
 
         return {"ok": False, "summary": f"Неизвестный инструмент: {name}."}
     except Exception as e:  # noqa: BLE001 — surface the error to the operator, don't crash the chat

@@ -1,9 +1,10 @@
 """Connects balance tracking (gap #4).
 
-The account's connects balance is reliably shown on the apply page
-("N Connects available" / "...have N Connects remaining"). We parse it there
-(during submit, a page we already open) and persist it, instead of scraping a
-separate connects page whose data is lazy-loaded.
+Two sources, both parsed and persisted:
+- the apply page ("N Connects available" / "...have N remaining") — read for free
+  during submit (parse_connects_balance), but can be stale/ambiguous;
+- the dedicated Connects History page ("My balance: N Connects") — authoritative,
+  read on demand via fetch_balance_live() (UI «🔄 Обновить баланс» / agent tool).
 """
 from __future__ import annotations
 
@@ -20,6 +21,53 @@ _REMAINING_PATTERNS = (
     r"Remaining balance:\s*(\d+)\s+Connects",
 )
 _AVAILABLE_PATTERNS = (r"(\d+)\s+Connects available",)
+
+CONNECTS_URL = "https://www.upwork.com/nx/plans/connects/history/"
+# The dedicated Connects History page shows "My balance\n163 Connects".
+_BALANCE_PAGE_PATTERNS = (
+    r"My balance[^\d]{0,40}(\d+)\s*Connects",
+    r"balance[^\d]{0,20}(\d+)\s*Connects",
+    r"(\d+)\s*Connects\b",
+)
+
+
+def parse_balance_page(text: str | None) -> int | None:
+    """Extract the account balance from the Connects History page text."""
+    if not text:
+        return None
+    for pat in _BALANCE_PAGE_PATTERNS:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def fetch_balance_live() -> dict:
+    """Open the Connects History page, parse the real balance, persist it.
+
+    Authoritative source ("My balance: N Connects"), unlike the apply-form value
+    which can be stale. Returns {ok, balance, reason}.
+    """
+    try:
+        from browser import browser_page
+    except ImportError:
+        return {"ok": False, "balance": None, "reason": "playwright missing"}
+    try:
+        with browser_page() as page:
+            page.goto(CONNECTS_URL, wait_until="domcontentloaded", timeout=60000)
+            bal = None
+            for _ in range(8):  # SPA: balance hydrates a few seconds after load
+                page.wait_for_timeout(1500)
+                body = page.evaluate("() => document.body ? document.body.innerText : ''") or ""
+                bal = parse_balance_page(body)
+                if bal is not None:
+                    break
+            if bal is None:
+                return {"ok": False, "balance": None, "reason": "balance not found on page"}
+            save_balance(bal)
+            return {"ok": True, "balance": bal, "reason": "ok"}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "balance": None, "reason": f"{type(e).__name__}: {e}"}
 
 
 def parse_connects_balance(text: str | None, prefer: str = "available") -> int | None:

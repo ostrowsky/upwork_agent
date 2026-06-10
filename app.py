@@ -847,11 +847,34 @@ def render_jobs():
             bar.empty()
             st.session_state["qualres"] = res
             st.rerun()
+    if st.button("♻️ Переквалифицировать всё по текущей стратегии", disabled=active is None,
+                 help="Сбрасывает НЕ отправленные вакансии в NEW и заново квалифицирует "
+                      "(применить обновлённую стратегию / новые строгие правила к бэклогу)"):
+        from qualify import qualify_new_jobs
+        from database import Job as _J
+
+        _db = get_db_session()
+        try:
+            n = (_db.query(_J)
+                 .filter(_J.task_id == active.id,
+                         _J.status.in_(["READY_TO_PROPOSE", "PROPOSAL_DRAFTED", "SKIPPED", "ERROR"]))
+                 .update({_J.status: "NEW"}, synchronize_session=False))
+            _db.commit()
+        finally:
+            _db.close()
+        bar, cb = make_progress("Переквалификация")
+        res = qualify_new_jobs(active.id, limit=500, progress=cb)
+        bar.empty()
+        res["requalified"] = n
+        st.session_state["qualres"] = res
+        st.rerun()
+
     _qr = st.session_state.get("qualres")
     if _qr:
         st.success(
             f"Квалификация — APPLY: {_qr['applied']} · SKIP: {_qr['skipped']} · "
             f"ошибок: {_qr['errors']} (из {_qr['total']})"
+            + (f" · сброшено в NEW: {_qr['requalified']}" if _qr.get("requalified") else "")
         )
     with col_f:
         status_filter = st.selectbox(
@@ -1640,6 +1663,16 @@ from connects import read_balance as _sidebar_balance  # noqa: E402
 _sb = _sidebar_balance()
 st.sidebar.metric("💎 Баланс Connects", _sb["balance"] if _sb else "—",
                   help=(f"Обновлён {_sb['updated_at'][:16]}" if _sb else "Нет данных"))
+if st.sidebar.button("🔄 Обновить баланс", help="Зайти на страницу Connects и перечитать (открывает браузер)"):
+    from connects import fetch_balance_live
+
+    with st.spinner("Читаю баланс с Upwork…"):
+        _ok, _r = run_browser_op(fetch_balance_live)
+    if _ok and _r.get("ok"):
+        st.sidebar.success(f"Баланс: {_r['balance']}")
+    else:
+        st.sidebar.error((_r or {}).get("reason", "браузер занят"))
+    st.rerun()
 
 # Worker status (read-only; worker runs as a separate process — `python worker.py`)
 from worker import read_status as _read_worker_status  # noqa: E402
