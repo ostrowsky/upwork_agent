@@ -630,14 +630,16 @@ def render_dashboard():
 
     data = dashboard_metrics()
     f = data["funnel"]
-    st.subheader("Воронка")
-    m1, m2, m3, m4, m5, m6 = st.columns(6)
     from connects import read_balance as _read_balance
 
     _bal = _read_balance()
+    st.subheader("Воронка")
+    m0, m1, m2, m3, m4, m5, m6 = st.columns(7)
+    m0.metric("💎 Баланс Connects", _bal["balance"] if _bal else "—",
+              help=(f"Обновлён {_bal['updated_at'][:16]} (читается при сабмите/синхронизации)"
+                    if _bal else "Нет данных — появится после первого сабмита/синка"))
     m1.metric("Откликов", f["proposals_sent"])
-    m2.metric("Connects потрачено", f["connects_spent"],
-              help=(f"Баланс: {_bal['balance']} (на {_bal['updated_at'][:16]})" if _bal else None))
+    m2.metric("Connects потрачено", f["connects_spent"])
     m3.metric("Ответов", f["replies"])
     m4.metric("Интервью", f["interviews"])
     m5.metric("Наймов", f["hires"])
@@ -1631,6 +1633,13 @@ _active = get_active_task()
 st.sidebar.caption(
     f"Активная задача: #{_active.id} — {_active.name}" if _active else "Активной задачи нет"
 )
+
+# Connects balance — visible on every page (read at submit / sync; may lag).
+from connects import read_balance as _sidebar_balance  # noqa: E402
+
+_sb = _sidebar_balance()
+st.sidebar.metric("💎 Баланс Connects", _sb["balance"] if _sb else "—",
+                  help=(f"Обновлён {_sb['updated_at'][:16]}" if _sb else "Нет данных"))
 
 # Worker status (read-only; worker runs as a separate process — `python worker.py`)
 from worker import read_status as _read_worker_status  # noqa: E402
