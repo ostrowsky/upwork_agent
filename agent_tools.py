@@ -22,6 +22,7 @@ ACTION_SPECS = [
     ("import_jobs", "Импортировать вакансии из ленты Upwork (браузер)", []),
     ("search_jobs", "Найти вакансии по ключевым словам и импортировать (браузер)", ["query"]),
     ("import_messages", "Импортировать переписку (инбокс) с Upwork (браузер)", []),
+    ("sync_outcomes", "Синхронизировать статусы/исходы откликов с Upwork: hired/declined/closed (браузер)", []),
 ]
 ACTION_NAMES = {a[0] for a in ACTION_SPECS}
 
@@ -214,6 +215,21 @@ def run_action(name: str, args: dict, task_id, db=None) -> dict:
                 return {"ok": True, "summary": f"Инбокс: диалогов {r.get('rooms', 0)}, новых сообщений "
                                                f"{r.get('imported', 0)} (см. «Клиенты»)."}
             return {"ok": False, "summary": f"Не удалось импортировать инбокс: {r.get('reason')}."}
+        if name == "sync_outcomes":
+            from proposals_sync import sync_from_upwork, sync_outcomes_from_upwork
+
+            def _both():
+                return sync_from_upwork(db=db), sync_outcomes_from_upwork(db=db)
+
+            st_, pair = _run_browser(_both)
+            if st_ == "busy":
+                return {"ok": False, "summary": "Браузер занят (worker/др. операция). Повтори позже."}
+            r1, r2 = pair
+            if r2.get("ok"):
+                return {"ok": True, "summary": (
+                    f"Sync: помечено SENT {r1.get('marked', 0)}; исходы — WIN {r2.get('win', 0)}, "
+                    f"declined {r2.get('lost_declined', 0)}, закрыто {r2.get('lost_closed', 0)}.")}
+            return {"ok": False, "summary": f"Sync исходов не удался: {r2.get('reason')}."}
 
         return {"ok": False, "summary": f"Неизвестный инструмент: {name}."}
     except Exception as e:  # noqa: BLE001 — surface the error to the operator, don't crash the chat

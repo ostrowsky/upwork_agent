@@ -793,22 +793,37 @@ def render_jobs():
                 st.error(f"Не удалось: {res.get('reason')}")
             st.rerun()
 
-    with st.expander("🔄 Синхронизировать статусы откликов с Upwork"):
-        st.caption("Читает «Submitted proposals» на Upwork и помечает совпадающие вакансии SENT. Открывает браузер.")
+    with st.expander("🔄 Синхронизировать статусы и исходы откликов с Upwork"):
+        st.caption(
+            "Читает «Submitted proposals» (помечает SENT) и архив откликов "
+            "(авто-исходы: hired → WIN, declined → LOST + разбор, job closed → LOST). Открывает браузер."
+        )
         if st.button("Синхронизировать отклики"):
-            from proposals_sync import sync_from_upwork
+            from proposals_sync import sync_from_upwork, sync_outcomes_from_upwork
 
-            with st.spinner("Читаю отправленные отклики с Upwork…"):
-                ok, res = run_browser_op(sync_from_upwork)
-            st.session_state["syncres"] = res if ok else {"ok": False, "reason": "браузер занят"}
+            def _both():
+                r1 = sync_from_upwork()
+                r2 = sync_outcomes_from_upwork()
+                return {"sent": r1, "outcomes": r2}
+
+            with st.spinner("Читаю отклики и архив с Upwork…"):
+                ok, res = run_browser_op(_both)
+            st.session_state["syncres"] = res if ok else {"sent": {"ok": False, "reason": "браузер занят"},
+                                                          "outcomes": {"ok": False, "reason": "браузер занят"}}
             st.rerun()
         _syr = st.session_state.get("syncres")
         if _syr:
-            if _syr.get("ok"):
-                st.success(f"Найдено: {_syr.get('found', 0)} · совпало: {_syr['matched']} · "
-                           f"помечено SENT: {_syr['marked']} · без совпадения: {_syr.get('unmatched', 0)}")
+            s, o = _syr.get("sent", {}), _syr.get("outcomes", {})
+            if s.get("ok"):
+                st.success(f"SENT-sync: найдено {s.get('found', 0)} · совпало {s.get('matched', 0)} · "
+                           f"помечено {s.get('marked', 0)} · без совпадения {s.get('unmatched', 0)}")
             else:
-                st.error(f"Не удалось: {_syr.get('reason')}")
+                st.error(f"SENT-sync: {s.get('reason')}")
+            if o.get("ok"):
+                st.success(f"Исходы: 🏆 WIN {o.get('win', 0)} · ⛔ declined {o.get('lost_declined', 0)} · "
+                           f"⛔ закрыто {o.get('lost_closed', 0)} (архивных: {o.get('found', 0)})")
+            else:
+                st.error(f"Исходы: {o.get('reason')}")
 
     # Qualify NEW jobs (LLM only — safe to run in Streamlit).
     col_q, col_a, col_f = st.columns([1, 1, 2])

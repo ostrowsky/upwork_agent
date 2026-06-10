@@ -150,9 +150,11 @@ def tick() -> dict:
     probe_every = _int_env("PROBE_EVERY", 1, minimum=1)
     msg_every = _int_env("MSG_IMPORT_EVERY", 1, minimum=1)
     search_every = _int_env("SEARCH_EVERY", 0, minimum=0)
+    outcome_every = _int_env("OUTCOME_SYNC_EVERY", 0, minimum=0)  # 0 = off (enable in .env)
     do_probe = (tick_no - 1) % probe_every == 0
     do_msg = (tick_no - 1) % msg_every == 0
     do_search = search_every > 0 and (tick_no - 1) % search_every == 0
+    do_outcomes = outcome_every > 0 and (tick_no - 1) % outcome_every == 0
 
     # Browser phase (probe + ingest) holds the cross-process lock so a manual
     # UI browser action doesn't fight the worker over the Edge profile.
@@ -265,6 +267,19 @@ def tick() -> dict:
         msg = {"imported": 0, "reason": f"skipped (throttled, MSG_IMPORT_EVERY={msg_every})"}
         log.info("messages | %s", msg["reason"])
 
+    # Auto-track proposal outcomes (won/declined/closed) from the archived page.
+    outcomes = {"reason": "skipped"}
+    if have_lock and probe.get("ok") and do_outcomes:
+        try:
+            from proposals_sync import sync_outcomes_from_upwork
+
+            outcomes = sync_outcomes_from_upwork(db=None)
+        except Exception as e:  # noqa: BLE001
+            outcomes = {"ok": False, "reason": f"outcomes error: {e}"}
+        log.info("outcomes | win=%s declined=%s closed=%s reason=%s",
+                 outcomes.get("win"), outcomes.get("lost_declined"),
+                 outcomes.get("lost_closed"), outcomes.get("reason"))
+
     # Browser phase done — release the lock so the UI can use the profile.
     if have_lock:
         _lock_release()
@@ -292,6 +307,9 @@ def tick() -> dict:
         last_submit_reason=submit.get("reason"),
         last_msg_imported=msg.get("imported", 0),
         last_msg_reason=msg.get("reason"),
+        last_outcomes_win=outcomes.get("win", 0),
+        last_outcomes_lost=(outcomes.get("lost_declined", 0) or 0) + (outcomes.get("lost_closed", 0) or 0),
+        last_outcomes_reason=outcomes.get("reason"),
     )
     try:
         from ai import LLM_STATS
