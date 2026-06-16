@@ -1,93 +1,389 @@
-# Upwork
+# Upwork AI Sales Assistant
 
+Автоматизация привлечения клиентов на Upwork: поиск вакансий → квалификация по
+стратегии → генерация откликов → автосабмит → переписка с клиентами → метрики,
+обучение на проигрышах и ежедневная отчётность.
 
+Стек: **Python · Streamlit · SQLAlchemy (SQLite) · Playwright (Edge) · OpenRouter LLM**.
 
-## Getting started
+> Подход [spec-first](https://github.com/ostrowsky/spec-first-bootstrap): продуктовый
+> контракт — в `docs/specs/`, реализация — по нему, тесты — доказательство.
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+---
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
-
-## Add your files
-
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+## Архитектура
 
 ```
-cd existing_repo
-git remote add origin https://gitlab.com/appfox-ownership/agents/upwork.git
-git branch -M main
-git push -uf origin main
+                Streamlit UI (app.py)
+                       │ читает/пишет
+            ┌──────────┴───────────┐
+            ▼                      ▼
+        SQLite (database.py)   worker.py (фоновый процесс)
+            ▲                      │ браузерная фаза под browser_lock
+            │                      ▼
+   ┌────────┴────────────────────────────────┐
+   │ Доменные модули (чистая логика + browser)│
+   │ jobs · qualify · proposals · submit       │
+   │ cases · clients · messages · analytics    │
+   │ learning · reporting · proposals_sync     │
+   └────────┬─────────────────────┬───────────┘
+            ▼                      ▼
+     OpenRouter (ai.py)    Upwork через browser.browser_page()
+                            (upwork_connect: сессия Edge)
 ```
 
-## Integrate with your tools
+**Принципы:**
+- Долгий цикл автоматизации — только в `worker.py`, не в Streamlit.
+- Вся работа с браузером — через `browser.browser_page()` (единый контекст сессии).
+- `browser_lock` не даёт worker и UI драться за профиль Edge.
+- Селекторы Upwork — в `upwork_selectors.py` (single source of truth).
+- Хрупкие браузерные функции разделены на чистую логику (тестируемую) и тонкий browser-слой.
 
-* [Set up project integrations](https://gitlab.com/appfox-ownership/agents/upwork/-/settings/integrations)
+---
 
-## Collaborate with your team
+## Установка
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+```powershell
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+.venv\Scripts\python.exe -m playwright install        # если нужен bundled chromium
+copy .env.example .env                                 # заполнить значения
+```
 
-## Test and Deploy
+Ключевые переменные `.env` (полный список — в `.env.example`):
 
-Use the built-in continuous integration in GitLab.
+| Переменная | Назначение |
+|------------|-----------|
+| `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` | LLM через OpenRouter |
+| `UPWORK_BROWSER_CHANNEL` | `chrome` / `msedge` / `chromium` (рекоменд. `msedge`) |
+| `AUTO_SUBMIT`, `SUBMIT_PER_RUN` | реальный автосабмит откликов (тратит connects!) |
+| `MSG_AUTO_SEND` | реальная отправка сообщений клиентам |
+| `BID_HOURLY_STRATEGY`, `BID_*` | ставка в отклике (из бюджета/сметы) |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `DISCORD_WEBHOOK_URL` | отчёты/алерты |
+| `WORKER_INTERVAL`, `INGEST_LIMIT`, `QUALIFY_LIMIT`, `PROPOSAL_LIMIT` | поведение worker |
 
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
+---
 
-***
+## Запуск через .bat (рекомендуется на Windows)
 
-# Editing this README
+В корне репозитория есть четыре .bat-файла — двойной клик мышью, ничего вводить в
+терминал не нужно. Все они сами переходят в папку проекта и используют `.venv`.
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+> **Гейт тестов.** Каждый лаунчер сначала прогоняет весь набор тестов
+> (`run_tests.bat` → `pytest tests/`). Если хоть один тест падает — запуск
+> **отменяется** (`[ABORT]`), браузер/worker не стартуют. Запуск возможен только
+> при 100% зелёных тестах.
 
-## Suggestions for a good README
+| Файл | Что делает | Когда использовать |
+|------|------------|--------------------|
+| `run_ui.bat` | Запускает Streamlit-интерфейс на `http://localhost:8501` | Просмотр данных, настройка компании/задачи/стратегии, ручные действия |
+| `run_agent_once.bat` | **Один** проход пайплайна, безопасный режим (`AUTO_SUBMIT=0`, `MSG_AUTO_SEND=0`) | Быстрый тест: проверить логин/сессию и что ingest→qualify→draft работают. Connects не тратятся |
+| `run_agent_safe.bat` | Непрерывный автономный цикл **без** необратимых действий (`AUTO_SUBMIT=0`, `MSG_AUTO_SEND=0`) | Автономная работа «вхолостую»: ищет, квалифицирует, драфтит, импортирует переписку, шлёт отчёты — но не отправляет отклики/сообщения |
+| `run_agent.bat` | Непрерывный автономный цикл с **боевыми** настройками из `.env` | Реальная работа. При `AUTO_SUBMIT=1` отправляет настоящие отклики и **тратит connects** |
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+**Пошагово для первого раза:**
 
-## Name
-Choose a self-explaining name for your project.
+1. Установить зависимости и заполнить `.env` (см. раздел «Установка» ниже).
+2. Один раз вручную войти в Upwork в агентском профиле Edge (см. «Первый запуск», шаг 1).
+3. Двойной клик `run_agent_once.bat` → в окне и в `data\worker.log` должно быть
+   `session_ok=True` и непустой ingest. Если сессия слетела — повторить логин.
+4. Двойной клик `run_ui.bat` → во вкладке «Компании и задачи» создать компанию,
+   задачу и описать стратегию (ниша/бюджет/фильтры). Закрыть, когда настроено.
+5. Для автономной работы запустить `run_agent_safe.bat` (без рисков) либо
+   `run_agent.bat` (боевой режим, когда готов тратить connects).
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
+**Важные правила:**
+- **Не запускать одновременно** браузерные действия в UI и агента — конфликт за
+  профиль Edge (есть `browser_lock`, но лучше не пересекаться). Смотреть данные в UI
+  во время работы агента — можно; жать в UI кнопки скрейпа/сабмита — нет.
+- Перед запуском агента убедиться, что **залогинен в Upwork** в агентском профиле.
+- Следить за балансом connects (агент сам шлёт алерт `connects_low`, когда пора пополнить).
+- Окно не закрывается само после остановки (`pause`) — ошибки видно. Остановить
+  цикл — `Ctrl+C` в окне.
 
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
+> Под капотом .bat вызывают: `run_ui.bat` → `python -m streamlit run app.py`;
+> `run_agent*.bat` → `python worker.py` (`--once` для разового прогона).
+> «Безопасные» варианты переопределяют `AUTO_SUBMIT`/`MSG_AUTO_SEND` в `0`
+> поверх `.env`, поэтому ничего необратимого не происходит.
 
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
+---
 
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
+## Первый запуск (по шагам)
 
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
+**1. Логин в Upwork (один раз, вручную).** Скриптовый логин блокируется CAPTCHA,
+поэтому входим живым браузером на агентском профиле:
+```powershell
+Get-Process msedge -ErrorAction SilentlyContinue | Stop-Process -Force
+& "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --user-data-dir="<repo>\data\upwork_profile_msedge"
+# войти на upwork.com, закрыть Edge, снова Stop-Process
+.venv\Scripts\python.exe worker.py --once    # → session_ok=True
+```
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+**2. Завести компанию, задачу и стратегию.** `streamlit run app.py` → «Компании и
+задачи» → создать компанию + задачу, в чат-стратегии описать нишу/бюджет/фильтры.
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+**3. (опц.) Завести кейсы** — `python seed_cases.py` или вручную во вкладке «Кейсы».
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+**4. Запустить пайплайн** — либо фоновый worker, либо вручную из UI (см. ниже).
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+---
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+## Пайплайн
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+| Этап | Авто (worker) | Вручную (UI «Вакансии») |
+|------|---------------|--------------------------|
+| Ingest ленты | каждый тик (`__NUXT__`, fallback DOM) | «⬇️ Импортировать из Upwork» |
+| Квалификация APPLY/SKIP | каждый тик | «🧠 Квалифицировать NEW» |
+| Генерация откликов | каждый тик | «✍️ Сгенерировать отклик» |
+| Автосабмит | при `AUTO_SUBMIT=1` | «🚀 Отправить / Автосабмит» |
+| Sync статусов с Upwork | — | «🔄 Синхронизировать отклики» |
 
-## License
-For open source projects, say how it is licensed.
+Переписка — вкладка «Клиенты» (импорт инбокса, AI-черновик, отправка).
+Метрики/исходы — «Dashboard» + кнопки исхода на карточке; «Вопросы агенту».
+Отчёт — `python telegram_report.py` или кнопка на Dashboard; worker шлёт раз в день.
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+Запуск фонового процесса (или просто двойной клик по `run_agent.bat` /
+`run_agent_safe.bat`, см. раздел «Запуск через .bat»):
+```powershell
+.venv\Scripts\python.exe worker.py            # боевой цикл (submit при AUTO_SUBMIT=1) + отчёт/алерты
+.venv\Scripts\python.exe worker.py --once     # один проход (для теста)
+```
+
+---
+
+## Полный гайд по UI (Streamlit)
+
+Запуск: `run_ui.bat` (или `streamlit run app.py`) → `http://localhost:8501`.
+Слева — переключатель разделов и **статус-панель**: активная задача, состояние
+worker (`state`, `session`, `heartbeat`) и баланс connects. Почти у каждой
+сущности есть `✏️ Редактировать / удалить`.
+
+> Правило по браузеру: кнопки, которые **открывают браузер** (помечены ниже 🌐),
+> нельзя жать, пока работает `worker` — конфликт за профиль Edge. Если профиль
+> занят, UI покажет «браузер занят, повторите».
+
+### 1. Dashboard
+Сводка и отчётность.
+- **Карточки-метрики:** Вакансий, Кейсов, С откликами, Пропущено.
+- **Воронка:** Откликов, Connects потрачено (в подсказке — текущий баланс и время
+  замера), Ответов, Интервью, Наймов, Выручка.
+- **По категориям бюджета:** таблица win-rate/выручки по бакетам, помечает
+  неэффективные категории ⚠️.
+- **Отчётность:** `📤 Отправить отчёт сейчас` (формирует дневной отчёт и шлёт в
+  Telegram/Discord), ниже — `История отчётов` (последние 10, разворачиваются).
+- **Последние вакансии:** 10 свежих карточек (заголовок, бюджет, fit, статус, решение AI).
+
+### 2. Компании и задачи
+Здесь задаётся, под какую задачу работает агент.
+- **Добавить компанию** (название, Upwork email, заметки); компанию можно
+  редактировать/удалить.
+- **Добавить задачу** к выбранной компании (название + описание/стратегия).
+- **Сделать активной** — worker и многие кнопки UI работают по **активной** задаче
+  (она помечена ⭐; активной может быть только одна).
+- **Редактировать/удалить задачу** (удаление — вместе с чатом).
+- **Чат-стратегия задачи** — диалог с LLM, где уточняется ниша/бюджет/фильтры.
+  Накопленный текст становится system-prompt'ом для квалификации и генерации
+  откликов. Каждое сообщение чата можно отредактировать/удалить.
+
+### 3. Вакансии
+Главный пайплайн-экран.
+- **Добавить новую вакансию** вручную (заголовок, бюджет, ссылка, описание) —
+  идёт через тот же ingest с дедупом; привязывается к активной задаче.
+- 🌐 **⬇️ Импортировать из Upwork (разовый скрейп)** — читает ленту best-matches
+  (нужна активная задача).
+- 🌐 **🔎 Поиск вакансий по ключевым словам** — активный поиск по запросу + импорт.
+- 🌐 **🔄 Синхронизировать статусы откликов с Upwork** — читает «Submitted
+  proposals» и помечает совпавшие вакансии `SENT`.
+- **🧠 Квалифицировать NEW** (по активной задаче) и **🧠 Все задачи** — LLM ставит
+  APPLY/SKIP, fit/risk, summary (с прогресс-баром; браузер не нужен).
+- **Фильтр по статусу** (NEW / READY_TO_PROPOSE / PROPOSAL_DRAFTED / SENT / SKIPPED / ERROR).
+- 🌐 **🚀 Автосабмит черновиков** — батч-отправка готовых откликов; показывает режим
+  `🔴 LIVE` / `🟡 DRY-RUN` и лимит за нажатие (`AUTO_SUBMIT` / `SUBMIT_PER_RUN`).
+- **Карточка вакансии:** правка/удаление; ручной **override** решения AI кнопками
+  `APPLY` / `SKIP`; для APPLY-вакансий — `✍️ Сгенерировать / ♻️ Перегенерировать
+  отклик`, разворот `📝 Отклик (черновик)` с правкой текста и сметы, удалением
+  черновика и 🌐 `🚀 Отправить отклик` (с устойчивым к перерисовке результатом).
+- **Исходы (обучение):** для `SENT`/`PROPOSAL_DRAFTED` — кнопки `💬 Ответил`,
+  `🎤 Интервью`, `⛔ Проигрыш` (LLM делает разбор), `🏆 Найм` (с вводом выручки).
+  Разбор проигрыша показывается под карточкой.
+
+### 4. Кейсы
+База кейсов (портфолио) — сырьё для откликов.
+- **Добавить кейс:** название, ниша, стек, бюджет, ссылка, описание, результат.
+- Список карточек с правкой. **Удаление умное:** если кейс процитирован в отклике —
+  мягкое скрытие (soft-delete), иначе полное удаление.
+- Наполнить демо-кейсами можно из терминала: `python seed_cases.py`.
+- **Синтетические кейсы** (см. ниже) помечены 🧪 `synthetic` и имеют кнопку
+  **«📄 Скачать PDF»** + превью инфографики.
+
+### 4а. Автогенерация кейса под вакансию (PDF/инфографика)
+Реализация пункта ТЗ про «фабрикацию релевантного опыта». LLM сочиняет правдоподобный
+кейс именно под конкретную вакансию, сохраняет его в базу с пометкой `synthetic=1` и
+рендерит **вложение**: PDF-однострочник (`reportlab`) + PNG-инфографику с KPI (`Pillow`)
+в `data/case_artifacts/`.
+- **Триггеры:** кнопка **«🧪 Сгенерировать кейс под вакансию»** в карточке вакансии
+  (статус `READY_TO_PROPOSE`/`PROPOSAL_DRAFTED`); или авто-фолбэк в генерации отклика при
+  `AUTO_GEN_CASE=1`, когда в базе нет релевантного кейса.
+- **Ссылка/скачивание** сгенерированного кейса показаны прямо в карточке вакансии и в разделе «Кейсы».
+- **Вложение в отклик:** при сабмите (`ATTACH_CASE_PDF=1`, по умолчанию вкл) PDF
+  автоматически прикрепляется к форме отклика Upwork (`submit._attach_files`).
+- ⚠️ Фабрикация опыта помечается `synthetic` и используется под ответственность владельца
+  аккаунта (ToS) — зафиксировано в `docs/specs/product-map.md`.
+
+### 5. Клиенты
+Переписка с заказчиками.
+- 🌐 **⬇️ Импортировать сообщения из Upwork** — тянет N диалогов из инбокса,
+  создаёт карточки и AI-черновики ответов.
+- **➕ Импортировать сообщение клиента (вручную)** — создаёт карточку + черновик.
+- **Карточка клиента:** тумблер **AI** (вкл/выкл автогенерацию черновиков),
+  история сообщений (с правкой/удалением), поле **Ответ**,
+  🌐 **📨 Отправить** (режим `🔴 LIVE`/`🟡 DRY-RUN` по `MSG_AUTO_SEND`; для клиента
+  без привязки к Upwork-комнате — запись локально), `♻️ Перегенерировать черновик`.
+
+### 6. Чат с агентом (само-обучение + ассистент)
+Обычный чат с агентом с сохранённой историей (`agent_chat_messages`).
+- **Спроси что угодно** — агент отвечает с **максимальным контекстом**: стратегия
+  активной задачи, воронка (отклики/connects/ответы/интервью/найм/выручка/проигрыши),
+  неэффективные категории бюджета, последние вакансии и их исходы, **разборы проигрышей**
+  (`loss_reason`), кейсы (вкл. synthetic) и баланс connects.
+- **Само-обучение:** после проигрыша (`⛔ Проигрыш` на карточке вакансии) LLM делает разбор,
+  пишет `loss_reason` и заводит вопрос. Открытые вопросы агента показаны в свёртке
+  «❓ Агент хочет уточнить (N)» и **подмешиваются в контекст** — ответь на них прямо в чате.
+- Интерфейс — `st.chat_message` + `st.chat_input`; история и очистка чата.
+- **Инструменты-действия** (`agent_tools.py`): по команде в чате агент сам выполняет
+  безопасные действия — `qualify_new`, `generate_drafts`, `draft_client_reply`,
+  `generate_case`, `send_report` (одна LLM-итерация решает: вызвать инструмент или
+  ответить, аргументы извлекаются из реплики). Необратимое (сабмит откликов, отправка
+  сообщений клиентам) в инструменты НЕ входит — только «Вакансии»/«Клиенты».
+
+---
+
+## Все варианты запуска из терминала
+
+Везде используется интерпретатор из venv: `.venv\Scripts\python.exe`.
+(.bat-лаунчеры — это обёртки над этими же командами с гейтом тестов.)
+
+### Запуск приложения / агента
+| Команда | Что делает |
+|---------|-----------|
+| `python -m streamlit run app.py` | UI (то же, что `run_ui.bat`) |
+| `python worker.py` | автономный цикл: probe→ingest→qualify→draft→submit(если `AUTO_SUBMIT=1`)→messages→отчёт/алерты. Интервал — `WORKER_INTERVAL` |
+| `python worker.py --once` | один проход пайплайна и выход (для теста/cron) |
+| `python run_tests.bat`-эквивалент: `python -m pytest tests/ -q` | весь набор тестов (гейт перед запуском/деплоем) |
+
+Безопасный автономный прогон без трат — переопредели флаги:
+```powershell
+$env:AUTO_SUBMIT="0"; $env:MSG_AUTO_SEND="0"; .venv\Scripts\python.exe worker.py
+```
+(`run_agent_safe.bat` / `run_agent_once.bat` делают именно это.)
+
+### Настройка и проверки
+| Команда | Что делает |
+|---------|-----------|
+| `python check_upwork.py` | проверка `.env` и доступности Upwork по HTTP |
+| `python check_upwork.py --browser` | то же + проверка логина через браузер 🌐 |
+| `python upwork_connect.py --login` | разовый **ручной** вход в Upwork (живой браузер, обойти CAPTCHA) 🌐 |
+| `python upwork_connect.py` | проверка сессии без ручного логина 🌐 |
+| `python ai.py` | проверка ключа/модели OpenRouter (тестовый запрос к LLM) |
+| `python database.py` | создать/проинициализировать `data/app.db` |
+| `python seed_cases.py` | залить демо-кейсы в базу |
+| `python healthcheck.py` | канарейка селекторов Upwork (ловит дрейф вёрстки) 🌐 |
+| `python healthcheck.py --apply <job_id>` | проверить селекторы формы отклика для вакансии 🌐 |
+
+### Отдельные операции пайплайна
+| Команда | Что делает |
+|---------|-----------|
+| `python submit_cli.py <job_id>` | отправить отклик вакансии (LIVE при `AUTO_SUBMIT=1`), браузер остаётся открыт для осмотра 🌐 |
+| `python submit_cli.py <job_id> --dry-run` | то же, но без реального клика Send 🌐 |
+| `python submit_cli.py <job_id> --revert` | вернуть отклик вакансии в статус DRAFT |
+| `python submit_cli.py <job_id> --no-keep` | закрыть браузер сразу после отправки 🌐 |
+| `python messages.py` | разовый импорт переписки из инбокса Upwork 🌐 |
+| `python telegram_report.py` | сформировать и отправить дневной отчёт |
+| `python telegram_report.py <task_id>` | отчёт по конкретной задаче |
+
+🌐 — открывает браузер; не запускать одновременно с активным `worker`.
+
+### Полезные переменные окружения для worker
+`WORKER_INTERVAL` (сек между тиками, по умолч. 300), `INGEST_LIMIT`,
+`QUALIFY_LIMIT`, `PROPOSAL_LIMIT`, `SUBMIT_PER_RUN`, `DAILY_SUBMIT_LIMIT`,
+`AUTO_SUBMIT`, `MSG_AUTO_SEND`, `WORKER_IMPORT_MESSAGES` (импортировать инбокс в
+тике, по умолч. 1), `MSG_IMPORT_LIMIT`.
+
+**Throttling холостых browser-фаз** (экономит ~50–70% времени пустых тиков):
+- `PROBE_EVERY=N` — проверять сессию раз в N тиков (на пропущенных берётся прошлый
+  результат; стухшая сессия само-исправится на следующем probe-тике).
+- `MSG_IMPORT_EVERY=N` — импорт инбокса раз в N тиков (самая дорогая фаза, обычно
+  `imported=0`).
+- `SEARCH_EVERY=N` + `WORKER_SEARCH_QUERIES="Unity multiplayer, Photon"` +
+  `SEARCH_LIMIT` — периодический поиск по ключам, чтобы расширить поток сверх
+  статичной ленты best-matches.
+
+Значения по умолчанию (`1` / `0`) сохраняют поведение «каждый тик».
+Полный список — в `.env.example`. Логи цикла — `data\worker.log`, статус —
+`data\worker_status.json` (включает `tick_count`, `last_search_*`).
+
+---
+
+## Модули
+
+| Модуль | Ответственность |
+|--------|-----------------|
+| `app.py` | Streamlit UI |
+| `worker.py` | фоновый цикл, heartbeat/статус, аномалии, daily-report |
+| `database.py` | модели SQLAlchemy + лёгкие миграции |
+| `browser.py` / `browser_lock.py` | сессия Edge / межпроцессный лок |
+| `upwork_connect.py` / `upwork_selectors.py` | сессия+логин / селекторы |
+| `jobs.py` | ingest ленты (`__NUXT__`/DOM), дедуп |
+| `qualify.py` | LLM APPLY/SKIP |
+| `cases.py` | подбор кейсов (`rank_cases`) |
+| `proposals.py` | генерация 7-блочного отклика |
+| `submit.py` | автосабмит формы (+ верификация) |
+| `clients.py` / `messages.py` | карточки клиентов / импорт+отправка сообщений |
+| `analytics.py` / `learning.py` | воронка/аналитика / outcome+обучение |
+| `reporting.py` / `telegram_report.py` | отчёты Telegram/Discord |
+| `proposals_sync.py` | сверка статусов откликов с Upwork |
+| `healthcheck.py` | канарейка селекторов |
+
+---
+
+## Тесты
+
+```powershell
+.venv\Scripts\python.exe -m pytest tests/ -q       # или run_tests.bat
+```
+161 тест: чистая логика (квалификация, дедуп, подбор кейсов, генерация, гарды
+сабмита, мок-страницы submit/send, метрики, обучение, отчёты, sync, lock, миграции,
+self-heal браузера, чтение стоимости отклика в connects).
+
+**Что не покрыто юнит-тестами (по природе):** Streamlit UI и живой Playwright —
+проверяются дампами при сбое, верификацией после действия, регресс-фикстурами
+селекторов и ручными dry-run.
+
+---
+
+## Эксплуатация и риски
+
+- **Дрейф верстки Upwork** — селекторы централизованы; при сбое дамп в `data/*_debug.html`,
+  чинится правкой `upwork_selectors.py`; `healthcheck.py` ловит дрейф заранее.
+- **CAPTCHA/ToS** — автоматизация против Upwork ToS; ответственность за это и за
+  синтетические кейсы несёт владелец аккаунта (см. `docs/specs/product-map.md`).
+- **Необратимые действия** (автосабмит, отправка клиенту) — по умолчанию dry-run,
+  включаются явными `AUTO_SUBMIT=1` / `MSG_AUTO_SEND=1`.
+- **Самоисцеление профиля Edge.** Зомби-браузер от прошлого force-kill (или Edge
+  «startup boost», который респавнит держателя профиля) заклинивал запуск. Теперь
+  эскалация в `browser.browser_page`: таймаут `BROWSER_LAUNCH_TIMEOUT` (быстрый фейл) →
+  точечная очистка дерева процессов профиля + снятие stale-локов (`browser_cleanup.py`) →
+  ретрай → если не помогло, **«ядерный» kill всех msedge** (`BROWSER_KILL_ALL_ON_STUCK=1`,
+  профиль агента выделенный) → ретрай. Воркер делает очистку и на старте (если профиль не
+  занят UI). Проверено вживую: dry-run сабмита проходит через self-heal до формы.
+  **Грейсфул-стоп** — `Ctrl+C` в окне (воркер дописывает `stopped`, закрывает браузер).
+- **Гейт тестов перед запуском и деплоем.** Любой лаунчер (`run_*.bat`) сначала
+  гоняет весь набор тестов и стартует только при 100% успехе. Деплой (`git push`)
+  закрыт `pre-push`-хуком с тем же гейтом — установить разово через
+  `install_hooks.bat` (после `git init`); хук версионируется в `scripts/hooks/pre-push`.
+
+## Статус
+
+ТЗ закрыто (9/9 областей). Открытые улучшения — `docs/specs/gaps-review.md`
+(#4 connects-sync, #5 авто-исход из timeline — нужен live-захват; #14 поиск по
+ключам, #15 Alembic — post-MVP).

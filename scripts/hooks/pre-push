@@ -1,0 +1,20 @@
+#!/bin/sh
+# Deploy gate: block `git push` (deploy) unless the full test suite passes.
+# Install with install_hooks.bat (or: copy to .git/hooks/pre-push).
+echo "[pre-push] Running full test suite before push/deploy..."
+
+if [ -x ".venv/Scripts/python.exe" ]; then
+    PY=".venv/Scripts/python.exe"
+elif [ -x ".venv/bin/python" ]; then
+    PY=".venv/bin/python"
+else
+    PY="python"
+fi
+
+"$PY" -m pytest tests/ -q
+if [ $? -ne 0 ]; then
+    echo "[pre-push] ABORT: tests failed. Push/deploy cancelled."
+    exit 1
+fi
+echo "[pre-push] All tests passed. Proceeding with push."
+exit 0
