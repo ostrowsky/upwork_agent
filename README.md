@@ -64,6 +64,33 @@ copy .env.example .env                                 # заполнить зн
 
 ---
 
+## Запуск в Docker
+
+В контейнере приложение работает на bundled **Chromium** (Microsoft Edge в образе нет)
+в headless-режиме. Образ собран на официальном `mcr.microsoft.com/playwright/python`
+(браузер и системные библиотеки уже внутри).
+
+```bash
+cp .env.example .env        # заполнить ключи (OPENROUTER_API_KEY и т.д.)
+docker compose up -d --build
+# UI → http://localhost:8501 ; worker крутится отдельным сервисом
+docker compose logs -f worker
+```
+
+Состав `docker-compose.yml`:
+- **`ui`** — Streamlit на `:8501`.
+- **`worker`** — фоновый цикл `worker.py`.
+- Оба сервиса делят том `./data` (SQLite, профиль браузера, логи). Межпроцессный
+  `browser_lock` в `data/` не даёт UI и worker драться за профиль.
+
+> ⚠️ **Логин в Upwork.** Сессия живёт в `data/upwork_profile_chromium` (том). В
+> headless-контейнере пройти ручной логин с CAPTCHA нельзя — выполните вход один раз
+> на хосте в Chromium с тем же `--user-data-dir`, либо положите готовый профиль в том.
+> Боевой автосабмit (`AUTO_SUBMIT=1`) тратит реальные connects — держите выключенным,
+> пока не убедитесь, что сессия валидна (`session_ok=True` в `data/worker.log`).
+
+---
+
 ## Запуск через .bat (рекомендуется на Windows)
 
 В корне репозитория есть четыре .bat-файла — двойной клик мышью, ничего вводить в

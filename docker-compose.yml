@@ -1,0 +1,34 @@
+# Two services off one image, sharing the ./data volume (SQLite DB, browser
+# profile, logs, browser_lock). The cross-process browser_lock in data/ keeps
+# the UI and the worker from driving the browser profile at the same time.
+services:
+  ui:
+    build: .
+    image: upwork-agent
+    env_file:
+      - .env
+    environment:
+      UPWORK_BROWSER_CHANNEL: chromium
+      UPWORK_HEADLESS: "1"
+      UPWORK_USER_DATA_DIR: /app/data/upwork_profile_chromium
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+  worker:
+    build: .
+    image: upwork-agent
+    env_file:
+      - .env
+    environment:
+      UPWORK_BROWSER_CHANNEL: chromium
+      UPWORK_HEADLESS: "1"
+      UPWORK_USER_DATA_DIR: /app/data/upwork_profile_chromium
+    command: ["python", "worker.py"]
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+    depends_on:
+      - ui
