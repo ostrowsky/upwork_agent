@@ -145,7 +145,40 @@ def open_context(playwright, profile_dir: Path, headless: bool):
     if is_real_user_data_dir(profile_dir):
         sub = os.getenv("UPWORK_PROFILE_DIRECTORY", "Default").strip() or "Default"
         kwargs["args"] = kwargs["args"] + [f"--profile-directory={sub}"]
-    return playwright.chromium.launch_persistent_context(**kwargs)
+    context = playwright.chromium.launch_persistent_context(**kwargs)
+    _bootstrap_cookies(context)
+    return context
+
+
+def _bootstrap_cookies(context) -> None:
+    """Seed the context with cookies from a portable ``upwork_storage_state.json``.
+
+    A persistent profile stores cookies encrypted with an OS-tied key, so a session
+    captured on Windows does not carry into a Linux container. Cookies exported to
+    storage_state JSON are plain values and ARE portable — injecting them lets a
+    fresh/empty container profile bootstrap a logged-in Upwork session.
+
+    No-op if the file is missing, empty, or disabled via ``UPWORK_BOOTSTRAP_COOKIES=0``.
+    Re-injecting on an already-authenticated profile is harmless (same cookies).
+    """
+    if os.getenv("UPWORK_BOOTSTRAP_COOKIES", "1").strip().lower() not in ("1", "true", "yes"):
+        return
+    state_path = BASE_DIR / "data" / "upwork_storage_state.json"
+    if not state_path.exists():
+        return
+    try:
+        import json
+
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+        cookies = data.get("cookies") or []
+        for c in cookies:
+            # Playwright requires sameSite in {Strict, Lax, None}; drop anything else.
+            if c.get("sameSite") not in ("Strict", "Lax", "None"):
+                c.pop("sameSite", None)
+        if cookies:
+            context.add_cookies(cookies)
+    except Exception:  # noqa: BLE001 — bootstrapping must never crash a browser op
+        pass
 
 
 def try_auto_login(page) -> None:
