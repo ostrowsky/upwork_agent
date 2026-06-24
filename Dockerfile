@@ -20,6 +20,7 @@ RUN playwright install chromium
 
 # App code.
 COPY . .
+RUN chmod +x /app/docker-entrypoint.sh
 
 # Runtime defaults (overridable via compose / .env). We drive the bundled Chromium
 # HEADED under Xvfb (see ENTRYPOINT) — there is no Microsoft Edge in the image.
@@ -30,10 +31,10 @@ ENV UPWORK_BROWSER_CHANNEL=chromium \
 
 EXPOSE 8501
 
-# Every service command runs under a virtual display, so any browser launch (worker
-# probe/submit, UI buttons) gets a real headed Chromium. xvfb-run -a picks a free
-# display number automatically.
-ENTRYPOINT ["xvfb-run", "-a", "--server-args=-screen 0 1920x1080x24"]
+# Entrypoint starts Xvfb then execs the service, so any browser launch (worker
+# probe/submit, UI buttons) gets a real headed Chromium on a virtual display, and
+# the service itself is the main process (crashes are visible / restart works).
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 
 # Default service is the Streamlit UI; the worker overrides command in compose.
 CMD ["python", "-m", "streamlit", "run", "app.py", \
