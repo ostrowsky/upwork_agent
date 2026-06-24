@@ -1,6 +1,9 @@
 # Two services off one image, sharing the ./data volume (SQLite DB, browser
 # profile, logs, browser_lock). The cross-process browser_lock in data/ keeps
 # the UI and the worker from driving the browser profile at the same time.
+#
+# Both services run under Xvfb (see Dockerfile ENTRYPOINT) so Chromium runs HEADED
+# — required to clear Cloudflare on Upwork.
 services:
   ui:
     build: .
@@ -9,13 +12,19 @@ services:
       - .env
     environment:
       UPWORK_BROWSER_CHANNEL: chromium
-      UPWORK_HEADLESS: "1"
+      UPWORK_HEADLESS: "0"
       UPWORK_USER_DATA_DIR: /app/data/upwork_profile_chromium
     ports:
       - "8501:8501"
     volumes:
       - ./data:/app/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8501/_stcore/health', timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 6s
+      start_period: 25s
+      retries: 3
 
   worker:
     build: .
@@ -24,7 +33,7 @@ services:
       - .env
     environment:
       UPWORK_BROWSER_CHANNEL: chromium
-      UPWORK_HEADLESS: "1"
+      UPWORK_HEADLESS: "0"
       UPWORK_USER_DATA_DIR: /app/data/upwork_profile_chromium
     command: ["python", "worker.py"]
     volumes:

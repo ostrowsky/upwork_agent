@@ -67,8 +67,10 @@ copy .env.example .env                                 # заполнить зн
 ## Запуск в Docker
 
 В контейнере приложение работает на bundled **Chromium** (Microsoft Edge в образе нет)
-в headless-режиме. Образ собран на официальном `mcr.microsoft.com/playwright/python`
-(браузер и системные библиотеки уже внутри).
+в **headed**-режиме под виртуальным дисплеем **Xvfb** — так Chromium ведёт себя как
+живой десктоп-браузер и проходит Cloudflare на Upwork (headless его обычно не проходит).
+Образ собран на официальном `mcr.microsoft.com/playwright/python` (браузер и системные
+библиотеки уже внутри); `xvfb-run` оборачивает команду каждого сервиса.
 
 ```bash
 cp .env.example .env        # заполнить ключи (OPENROUTER_API_KEY и т.д.)

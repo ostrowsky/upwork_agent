@@ -4,6 +4,13 @@ FROM mcr.microsoft.com/playwright/python:v1.60.0-noble
 
 WORKDIR /app
 
+# Xvfb: a virtual X display so we can run Chromium HEADED inside the container.
+# Headless Chromium trips Cloudflare on Upwork; a headed browser under Xvfb clears
+# it like a real desktop browser.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends xvfb \
+    && rm -rf /var/lib/apt/lists/*
+
 # Python deps first for layer caching.
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
@@ -14,17 +21,19 @@ RUN playwright install chromium
 # App code.
 COPY . .
 
-# Runtime defaults (overridable via compose / .env). In a container we drive the
-# bundled Chromium headless — there is no Microsoft Edge.
+# Runtime defaults (overridable via compose / .env). We drive the bundled Chromium
+# HEADED under Xvfb (see ENTRYPOINT) — there is no Microsoft Edge in the image.
 ENV UPWORK_BROWSER_CHANNEL=chromium \
-    UPWORK_HEADLESS=1 \
+    UPWORK_HEADLESS=0 \
     UPWORK_USER_DATA_DIR=/app/data/upwork_profile_chromium \
     PYTHONUNBUFFERED=1
 
 EXPOSE 8501
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8501/_stcore/health', timeout=4).status==200 else 1)"]
+# Every service command runs under a virtual display, so any browser launch (worker
+# probe/submit, UI buttons) gets a real headed Chromium. xvfb-run -a picks a free
+# display number automatically.
+ENTRYPOINT ["xvfb-run", "-a", "--server-args=-screen 0 1920x1080x24"]
 
 # Default service is the Streamlit UI; the worker overrides command in compose.
 CMD ["python", "-m", "streamlit", "run", "app.py", \
