@@ -124,6 +124,26 @@ def launch_timeout_ms() -> int:
         return 60000
 
 
+def proxy_from_env() -> dict | None:
+    """Playwright proxy config from env, or None if unset.
+
+    `UPWORK_PROXY_SERVER` (e.g. ``http://host:port`` or ``socks5://host:port``),
+    optional `UPWORK_PROXY_USERNAME` / `UPWORK_PROXY_PASSWORD`. Needed on server
+    deploys where Upwork's apply endpoint Cloudflare-blocks datacenter IPs.
+    """
+    server = os.getenv("UPWORK_PROXY_SERVER", "").strip()
+    if not server:
+        return None
+    proxy: dict = {"server": server}
+    user = os.getenv("UPWORK_PROXY_USERNAME", "").strip()
+    pwd = os.getenv("UPWORK_PROXY_PASSWORD", "").strip()
+    if user:
+        proxy["username"] = user
+    if pwd:
+        proxy["password"] = pwd
+    return proxy
+
+
 def open_context(playwright, profile_dir: Path, headless: bool):
     profile_dir.mkdir(parents=True, exist_ok=True)
     kwargs = {
@@ -141,6 +161,11 @@ def open_context(playwright, profile_dir: Path, headless: bool):
     # "chromium" = bundled Playwright build → no channel; others are OS-installed channels.
     if channel != "chromium":
         kwargs["channel"] = channel
+    # Optional residential proxy — Upwork's apply/submit endpoint serves a Cloudflare
+    # Turnstile challenge to datacenter IPs (server deploys); a residential proxy clears it.
+    proxy = proxy_from_env()
+    if proxy:
+        kwargs["proxy"] = proxy
     # Real Chrome/Edge 'User Data' root → the logged-in profile is a subfolder.
     if is_real_user_data_dir(profile_dir):
         sub = os.getenv("UPWORK_PROFILE_DIRECTORY", "Default").strip() or "Default"
