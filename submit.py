@@ -469,15 +469,103 @@ def submit_log(line: str) -> None:
         pass
 
 
+FEED_URL = "https://www.upwork.com/nx/find-work/best-matches"
+
+
+def apply_via_spa_enabled() -> bool:
+    """In-SPA navigation to the apply form (default on). Set APPLY_VIA_SPA=0 to
+    force the old deep-link goto."""
+    return os.getenv("APPLY_VIA_SPA", "1").strip().lower() in ("1", "true", "yes")
+
+
+def _spa_job_route(job: Job) -> str | None:
+    """Client-side route (relative to the /nx/find-work/ router base) for a job's
+    detail page. None if the job has no upwork id."""
+    jid = (getattr(job, "upwork_job_id", "") or "").strip().lstrip("~")
+    return f"/best-matches/details/~{jid}" if jid else None
+
+
+def _dismiss_profile_modal(page) -> None:
+    """Remove the fullscreen 'Complete your profile' modal that can cover the
+    'Apply now' button (account not 100% complete). Best-effort."""
+    try:
+        page.evaluate("""() => {
+          document.querySelectorAll('.complete-profile-modal, .is-modal-fullscreen, [data-test*="complete-your-profile"]').forEach(e => e.remove());
+          document.body.classList.remove('air3-is-fullscreen-open');
+          document.documentElement.style.overflow = 'auto';
+        }""")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _navigate_apply_spa(page, job: Job) -> bool:
+    """Reach the apply form by navigating INSIDE the SPA, not deep-linking.
+
+    Upwork's Cloudflare serves an unbeatable "Just a moment" challenge to
+    datacenter IPs on a *full-page load* of /jobs/ or /apply/. But the feed
+    (/nx/find-work/best-matches) passes, and client-side navigation from there
+    (Vue router.push → job detail → "Apply now") loads the form via XHR reusing
+    the feed's cf_clearance — no fresh challenge. This is how a human reaches it.
+
+    Returns True if the apply form opened. Requires a real Playwright page
+    (get_by_role); returns False on a fake/test page so callers fall back.
+    """
+    if not hasattr(page, "get_by_role"):
+        return False
+    route = _spa_job_route(job)
+    if not route:
+        return False
+    page.goto(FEED_URL, wait_until="domcontentloaded", timeout=60000)
+    page.wait_for_timeout(4000)
+    if not _wait_past_cloudflare(page):  # the feed itself should clear CF
+        return False
+    # Client-side route change to the job detail (no full load → no challenge).
+    page.evaluate("(p) => { try { window.$nuxt.$router.push(p); } catch (e) {} }", route)
+    # Wait for the detail to render, dismiss the profile modal, click "Apply now".
+    clicked = False
+    for _ in range(12):
+        page.wait_for_timeout(1500)
+        _dismiss_profile_modal(page)
+        try:
+            btn = page.get_by_role("button", name="Apply now").first
+            if btn.count():
+                btn.click(timeout=4000)
+                clicked = True
+                break
+        except Exception:  # noqa: BLE001
+            continue
+    if not clicked:
+        return False
+    # Wait for the apply form (cover letter) or the /apply/ URL.
+    for _ in range(12):
+        page.wait_for_timeout(1500)
+        if _form_present(page) or "/apply" in (getattr(page, "url", "") or ""):
+            return True
+    return False
+
+
+def _open_apply_page(page, url: str, job: Job) -> bool:
+    """Get the page onto the apply form. Tries Cloudflare-safe SPA navigation
+    first, then falls back to the deep-link goto. Returns False if still blocked."""
+    if apply_via_spa_enabled():
+        try:
+            if _navigate_apply_spa(page, job):
+                return True
+            submit_log(f"job#{getattr(job, 'id', '?')} spa-nav failed → deep-link fallback")
+        except Exception as e:  # noqa: BLE001
+            submit_log(f"job#{getattr(job, 'id', '?')} spa-nav error: {type(e).__name__}: {str(e)[:80]}")
+    page.goto(url, wait_until="domcontentloaded", timeout=60000)
+    page.wait_for_timeout(3000)
+    return _wait_past_cloudflare(page)
+
+
 def _apply_on_page(page, url: str, job: Job, proposal: Proposal, db, dry_run: bool) -> dict:
     """Drive the apply form on an already-open page. Browser-agnostic, so it is
     unit-testable with a fake page object (see tests/test_submit_form.py)."""
     from upwork_connect import is_logged_in
 
-    page.goto(url, wait_until="domcontentloaded", timeout=60000)
-    page.wait_for_timeout(3000)
-    # Deep-linking the apply page can trigger a fresh Cloudflare challenge.
-    if not _wait_past_cloudflare(page):
+    # In-SPA navigation avoids Cloudflare on datacenter IPs; deep-link goto fallback.
+    if not _open_apply_page(page, url, job):
         _dump_apply_debug(page)
         return {"ok": False, "submitted": False, "dry_run": dry_run,
                 "reason": "blocked by Cloudflare challenge (debug dumped)", "connects": None}
