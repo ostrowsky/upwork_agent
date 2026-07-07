@@ -155,6 +155,13 @@ def open_context(playwright, profile_dir: Path, headless: bool):
             "--disable-blink-features=AutomationControlled",
             "--no-first-run",
             "--no-default-browser-check",
+            # GPU/renderer crashes ("Page.goto: Page crashed") observed on this
+            # machine mid-navigation, which aborts SPA-nav and falls back to a
+            # blocked deep-link goto. Software rendering avoids the crash.
+            "--disable-gpu",
+            "--disable-gpu-compositing",
+            "--disable-software-rasterizer",
+            "--use-gl=swiftshader",
         ],
     }
     channel = browser_channel()
