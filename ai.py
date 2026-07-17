@@ -14,6 +14,10 @@ if not OPENROUTER_API_KEY:
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY,
+    # Free-tier OpenRouter models occasionally stall under load; without an
+    # explicit bound the SDK's own default (minutes) makes a single stuck job
+    # look like the whole qualify/draft loop has frozen.
+    timeout=45.0,
     default_headers={
         "HTTP-Referer": "http://localhost:8501",
         "X-Title": APP_NAME,
