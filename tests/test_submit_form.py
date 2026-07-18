@@ -533,3 +533,32 @@ def test_fill_screening_questions_defensive_when_locator_errors():
     page = FakePage({}, body="", url=APPLY_URL)  # "textarea" not in _locators → FakeLocator(count=0)
     job, proposal = _job(), _proposal()
     assert submit._fill_screening_questions(page, job, proposal) == 0
+
+
+def test_fill_profile_highlights_success():
+    locs = {
+        S.APPLY_HIGHLIGHTS_PORTFOLIO_TAB: FakeLocator(count=1),
+        S.APPLY_HIGHLIGHT_SELECT_BUTTON: FakeLocator(count=1),
+        S.APPLY_HIGHLIGHT_CONFIRM_BUTTON: FakeLocator(count=1),
+    }
+    page = FakePage(locs, body="", url=APPLY_URL)
+    assert submit._fill_profile_highlights(page) is True
+    assert locs[S.APPLY_HIGHLIGHTS_PORTFOLIO_TAB].actions == ["click"]
+    assert locs[S.APPLY_HIGHLIGHT_SELECT_BUTTON].actions == ["click"]
+    assert locs[S.APPLY_HIGHLIGHT_CONFIRM_BUTTON].actions == ["click"]
+
+
+def test_fill_profile_highlights_no_tab_is_noop():
+    page = FakePage({}, body="", url=APPLY_URL)  # tab not in _locators → count=0
+    assert submit._fill_profile_highlights(page) is False
+
+
+def test_fill_profile_highlights_no_items_cancels_modal():
+    locs = {
+        S.APPLY_HIGHLIGHTS_PORTFOLIO_TAB: FakeLocator(count=1),
+        S.APPLY_HIGHLIGHT_CANCEL_BUTTON: FakeLocator(count=1),
+        # no S.APPLY_HIGHLIGHT_SELECT_BUTTON entry → count=0 (nothing to select)
+    }
+    page = FakePage(locs, body="", url=APPLY_URL)
+    assert submit._fill_profile_highlights(page) is False
+    assert locs[S.APPLY_HIGHLIGHT_CANCEL_BUTTON].actions == ["click"]

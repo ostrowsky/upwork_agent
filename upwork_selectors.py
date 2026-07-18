@@ -126,6 +126,16 @@ APPLY_ATTACH_INPUT = (
     'input[type="file"]'
 )
 
+# "Profile highlights" section — Portfolio/Certificates tab card, opens the
+# "Add profile highlights" modal. Both the per-item "Select highlight" button
+# AND the modal's own confirm button share data-ev-label
+# "profile_highlights_editor_btn_add" — distinguish by class (.item-add vs
+# .air3-btn-primary in the footer).
+APPLY_HIGHLIGHTS_PORTFOLIO_TAB = '[data-test="portfolio"]'
+APPLY_HIGHLIGHT_SELECT_BUTTON = 'button.item-add:has-text("Select highlight")'
+APPLY_HIGHLIGHT_CONFIRM_BUTTON = '.air3-modal-footer button.air3-btn-primary:has-text("Add to highlights")'
+APPLY_HIGHLIGHT_CANCEL_BUTTON = '.air3-modal-footer button:has-text("Cancel")'
+
 # Per-proposal connects cost — anchor on the Send button, NOT the account balance.
 CONNECTS_REGEX = r"Send for\s+(\d+)\s+Connects"
 # Fallback for the "Submit proposal" button variant, where the cost isn't on

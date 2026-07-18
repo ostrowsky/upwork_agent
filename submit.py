@@ -391,6 +391,43 @@ def _fill_rate_increase(page) -> bool:
     return freq
 
 
+def _fill_profile_highlights(page) -> bool:
+    """Add the first available portfolio item as a "Profile highlight".
+
+    Flow (verified live, no stable data-test on the picker itself): click the
+    Portfolio tab card to open the "Add profile highlights" modal, click the
+    first item's "Select highlight" button, then the modal's own "Add to
+    highlights" button (disabled until something is selected). Purely
+    cosmetic — best-effort, and must never block the submit on failure.
+    """
+    try:
+        tab = page.locator(S.APPLY_HIGHLIGHTS_PORTFOLIO_TAB).first
+        if not tab.count():
+            return False
+        tab.scroll_into_view_if_needed(timeout=3000)
+        tab.click()
+        page.wait_for_timeout(1000)
+
+        select_btn = page.locator(S.APPLY_HIGHLIGHT_SELECT_BUTTON).first
+        if not select_btn.count():
+            # No portfolio items available — close the modal if it's open.
+            cancel = page.locator(S.APPLY_HIGHLIGHT_CANCEL_BUTTON).first
+            if cancel.count():
+                cancel.click()
+            return False
+        select_btn.click()
+        page.wait_for_timeout(500)
+
+        confirm = page.locator(S.APPLY_HIGHLIGHT_CONFIRM_BUTTON).first
+        if not confirm.count():
+            return False
+        confirm.click()
+        page.wait_for_timeout(800)
+        return True
+    except Exception:  # noqa: BLE001 — cosmetic; never block the submit
+        return False
+
+
 def _dump_debug(page, name: str) -> str:
     from pathlib import Path
 
@@ -744,6 +781,9 @@ def _apply_on_page(page, url: str, job: Job, proposal: Proposal, db, dry_run: bo
     if attach_case_enabled():
         attach = _attach_files(page, attachment_paths_for_proposal(db, proposal))
 
+    # Profile highlights (portfolio project) — cosmetic and optional; never blocks submit.
+    highlight_added = _fill_profile_highlights(page)
+
     bid = _fill_bid(page, job, proposal)
     rate_increase = _fill_rate_increase(page)
     connects = _read_connects_required(page)
@@ -770,7 +810,7 @@ def _apply_on_page(page, url: str, job: Job, proposal: Proposal, db, dry_run: bo
                 pass
         return {"ok": True, "submitted": False, "dry_run": True,
                 "reason": (f"dry-run (filled={filled}, screening={screening_filled}, bid={bid}, "
-                           f"rate_inc={rate_increase}, "
+                           f"rate_inc={rate_increase}, highlight={highlight_added}, "
                            f"attached={attach['attached']}/verified={attach.get('verified', 0)}; {dbg})"),
                 "connects": connects, "attached": attach["attached"],
                 "attached_verified": attach.get("verified", 0)}
