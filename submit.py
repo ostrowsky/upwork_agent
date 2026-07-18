@@ -297,15 +297,22 @@ def _select_air3_dropdown(page, aria_contains: str, prefer_text: str = "") -> bo
 
 
 def _textarea_label_text(page, textarea) -> str:
-    """Best-effort accessible label for a textarea: <label for=>, aria-label,
-    or the element aria-labelledby points to (covers Upwork's Air3 pattern of
-    `aria-labelledby="<field>_label"`)."""
+    """Best-effort label for a textarea: <label for=>, aria-label, the element
+    aria-labelledby points to (Upwork's cover-letter pattern), or — for the
+    per-job screening questions, where Upwork renders a <label id=""> sibling
+    with NO aria-labelledby link at all — the nearest .form-group ancestor's
+    <label>, matched purely by DOM position rather than accessibility wiring."""
     try:
         return (textarea.evaluate(
             "el => (el.labels && el.labels[0] && el.labels[0].innerText) || "
             "el.getAttribute('aria-label') || "
             "(el.getAttribute('aria-labelledby') && "
-            " (document.getElementById(el.getAttribute('aria-labelledby').split(' ')[0]) || {}).innerText) || ''"
+            " (document.getElementById(el.getAttribute('aria-labelledby').split(' ')[0]) || {}).innerText) || "
+            "(() => { "
+            "  const group = el.closest('.form-group') || el.parentElement; "
+            "  const lbl = group && group.querySelector('label'); "
+            "  return (lbl && lbl.innerText) || ''; "
+            "})() || ''"
         ) or "").strip()
     except Exception:  # noqa: BLE001
         return ""
