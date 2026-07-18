@@ -430,16 +430,22 @@ def _is_boost_required(text: str | None) -> bool:
 
 
 def _read_connects_required(page) -> int | None:
-    """Cost of THIS proposal — read from the 'Send for N Connects' button.
+    """Cost of THIS proposal — read from the 'Send for N Connects' button, or
+    (on the plain "Submit proposal" button variant, which carries no amount)
+    from the "This proposal requires N Connects" text earlier on the page.
 
     The page also shows the account balance ("72 Connects available"); we must
-    not confuse it with the per-proposal cost, so we anchor on the Send button.
+    not confuse it with the per-proposal cost, so we anchor on these two
+    specific phrasings rather than any number near the word "Connects".
     """
     try:
         body = page.inner_text("body", timeout=3000)
     except Exception:  # noqa: BLE001
         return None
     m = re.search(S.CONNECTS_REGEX, body, re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    m = re.search(S.CONNECTS_REQUIRED_REGEX, body, re.IGNORECASE)
     return int(m.group(1)) if m else None
 
 

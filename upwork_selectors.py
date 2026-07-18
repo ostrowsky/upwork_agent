@@ -83,7 +83,10 @@ APPLY_DROPDOWN_OPTION = (
 )
 APPLY_PERCENT_TOGGLE = '.air3-dropdown[aria-label*="How much"] [data-test="dropdown-toggle"]'
 
-# Primary submit button reads "Send for N Connects".
+# Primary submit button usually reads "Send for N Connects", but Upwork also
+# serves a plain "Submit proposal" variant (no connects amount on the button
+# itself — the cost is only shown earlier, in "This proposal requires N
+# Connects"); both must be matched or the button is never found.
 # Agency accounts must choose "submit as freelancer / as agency member" before
 # the Send button appears (radio group .up-fe-freelancer-agency-selector).
 APPLY_AGENCY_SELECTOR = ".up-fe-freelancer-agency-selector, [class*='freelancer-agency-selector']"
@@ -97,7 +100,9 @@ APPLY_SEND_BUTTON = (
     'button.air3-btn-primary:has-text("Send for"), '
     'button:has-text("Send for"), '
     'button[data-test="submit-proposal-button"], '
-    'button.air3-btn-primary:has-text("Send")'
+    'button.air3-btn-primary:has-text("Send"), '
+    'button.air3-btn-primary:has-text("Submit proposal"), '
+    'button:has-text("Submit proposal")'
 )
 APPLY_ERROR = (
     '[role="alert"], .air3-alert-danger, [data-test*="error"], .up-alert-content'
@@ -123,6 +128,9 @@ APPLY_ATTACH_INPUT = (
 
 # Per-proposal connects cost — anchor on the Send button, NOT the account balance.
 CONNECTS_REGEX = r"Send for\s+(\d+)\s+Connects"
+# Fallback for the "Submit proposal" button variant, where the cost isn't on
+# the button at all — read it from the "This proposal requires N Connects" text.
+CONNECTS_REQUIRED_REGEX = r"proposal requires\s+(\d+)\s+Connects"
 # Account connects balance parsing lives in connects.py (parse_connects_balance).
 
 # ---------------------------------------------------------------------------
