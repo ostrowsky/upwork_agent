@@ -265,6 +265,11 @@ def _select_air3_dropdown(page, aria_contains: str, prefer_text: str = "") -> bo
     if not toggle.count():
         toggle = page.locator(S.apply_rate_increase_toggle_fallback(aria_contains)).first
     if not toggle.count():
+        # Last resort: match by accessible label text (survives markup changes
+        # to the .air3-dropdown/aria-label structure the two selectors above
+        # depend on) — seen live still showing the placeholder after both failed.
+        toggle = page.get_by_label(re.compile(aria_contains, re.I)).first
+    if not toggle.count():
         return False
     try:
         toggle.scroll_into_view_if_needed(timeout=3000)
@@ -289,6 +294,76 @@ def _select_air3_dropdown(page, aria_contains: str, prefer_text: str = "") -> bo
     except Exception:  # noqa: BLE001
         return False
     return False
+
+
+def _textarea_label_text(page, textarea) -> str:
+    """Best-effort accessible label for a textarea: <label for=>, aria-label,
+    or the element aria-labelledby points to (covers Upwork's Air3 pattern of
+    `aria-labelledby="<field>_label"`)."""
+    try:
+        return (textarea.evaluate(
+            "el => (el.labels && el.labels[0] && el.labels[0].innerText) || "
+            "el.getAttribute('aria-label') || "
+            "(el.getAttribute('aria-labelledby') && "
+            " (document.getElementById(el.getAttribute('aria-labelledby').split(' ')[0]) || {}).innerText) || ''"
+        ) or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def generate_screening_answer(question: str, job: Job, proposal: Proposal) -> str:
+    """LLM-written answer to a job-specific screening question (e.g. "Describe
+    your recent experience with similar projects"), using the job + our own
+    proposal/cases as context so the answer stays consistent with the pitch."""
+    from ai import call_llm
+
+    prompt = (
+        f"You are answering a screening question on an Upwork job application.\n\n"
+        f"Job title: {job.title}\n"
+        f"Job description: {(job.description or '')[:1500]}\n\n"
+        f"Our proposal cover letter (for context/consistency): {(proposal.content or '')[:1000]}\n\n"
+        f"Screening question: {question}\n\n"
+        "Write a short, specific, first-person answer (2-5 sentences). "
+        "No preamble, no markdown — just the answer text."
+    )
+    try:
+        return (call_llm([{"role": "user", "content": prompt}]) or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _fill_screening_questions(page, job: Job, proposal: Proposal) -> int:
+    """Fill any custom screening-question textareas beyond the cover letter.
+
+    Some jobs add extra required free-text fields (e.g. "Please attach any
+    portfolio with retro pixel art style.") in the same "Additional details"
+    block as the cover letter. Left empty, Upwork blocks the send client-side
+    with a per-field "Value is required" hint — no banner our error-detection
+    can see, so it just looks like "not confirmed" with no reason.
+    """
+    filled = 0
+    try:
+        textareas = page.locator("textarea")
+        n = textareas.count()
+    except Exception:  # noqa: BLE001
+        return 0
+    for i in range(n):
+        ta = textareas.nth(i)
+        try:
+            if not ta.is_visible():
+                continue
+            if (ta.input_value() or "").strip():
+                continue  # already has content (cover letter, or pre-filled)
+            label = _textarea_label_text(page, ta)
+            if not label or "cover letter" in label.lower():
+                continue
+            answer = generate_screening_answer(label, job, proposal)
+            if answer:
+                ta.fill(answer)
+                filled += 1
+        except Exception:  # noqa: BLE001
+            continue
+    return filled
 
 
 def _fill_rate_increase(page) -> bool:
@@ -610,6 +685,8 @@ def _apply_on_page(page, url: str, job: Job, proposal: Proposal, db, dry_run: bo
         cover.fill(proposal.content)
         filled = True
 
+    screening_filled = _fill_screening_questions(page, job, proposal)
+
     # Agency accounts: pick the applicant identity (freelancer/agency), else Send is hidden.
     _select_applicant(page)
 
@@ -643,7 +720,8 @@ def _apply_on_page(page, url: str, job: Job, proposal: Proposal, db, dry_run: bo
             except Exception:  # noqa: BLE001
                 pass
         return {"ok": True, "submitted": False, "dry_run": True,
-                "reason": (f"dry-run (filled={filled}, bid={bid}, rate_inc={rate_increase}, "
+                "reason": (f"dry-run (filled={filled}, screening={screening_filled}, bid={bid}, "
+                           f"rate_inc={rate_increase}, "
                            f"attached={attach['attached']}/verified={attach.get('verified', 0)}; {dbg})"),
                 "connects": connects, "attached": attach["attached"],
                 "attached_verified": attach.get("verified", 0)}

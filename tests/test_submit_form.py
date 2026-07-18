@@ -105,6 +105,44 @@ class FakePage:
         pass
 
 
+class FakeTextareaEl:
+    """One distinct textarea element, for tests that need several at once
+    (page.locator("textarea") normally returns ONE FakeLocator shared across
+    matches — not enough to simulate several screening-question boxes)."""
+
+    def __init__(self, label="", value="", visible=True):
+        self._label = label
+        self._value = value
+        self._visible = visible
+        self.filled_with = None
+
+    def is_visible(self, **k):
+        return self._visible
+
+    def input_value(self, **k):
+        return self._value
+
+    def evaluate(self, expr, **k):
+        return self._label
+
+    def fill(self, value, **k):
+        self.filled_with = value
+        self._value = value
+
+
+class FakeMultiLocator:
+    """`page.locator("textarea")` matching several distinct elements."""
+
+    def __init__(self, items):
+        self._items = items
+
+    def count(self):
+        return len(self._items)
+
+    def nth(self, i):
+        return self._items[i]
+
+
 class FakeDB:
     def __init__(self):
         self.commits = 0
@@ -413,3 +451,78 @@ def test_empty_rate_config_keeps_profile_default(monkeypatch):
 
     assert "bid=None" in res["reason"]
     assert locs[S.APPLY_RATE_HOURLY].actions == []  # field untouched
+
+
+def test_screening_questions_filled_and_cover_letter_skipped(monkeypatch):
+    """Custom screening-question textareas beyond the cover letter get an
+    LLM-generated answer; already-filled, unlabeled, hidden, or the cover
+    letter box itself are left alone."""
+    calls = []
+    monkeypatch.setattr(
+        submit, "generate_screening_answer",
+        lambda q, job, proposal: (calls.append(q), f"ANSWER for: {q}")[1],
+    )
+
+    cover_el = FakeTextareaEl(label="Cover Letter", value="already has text")
+    q1 = FakeTextareaEl(label="Describe your recent experience with similar projects", value="")
+    q2 = FakeTextareaEl(label="Please attach any portfolio with retro pixel art style.", value="")
+    already_has_value = FakeTextareaEl(label="Some other filled field", value="not empty")
+    unlabeled = FakeTextareaEl(label="", value="")
+    hidden = FakeTextareaEl(label="Hidden question", value="", visible=False)
+
+    locs = _base_locators()
+    locs["textarea"] = FakeMultiLocator([cover_el, q1, q2, already_has_value, unlabeled, hidden])
+    page = FakePage(locs, body="Send for 16 Connects", url=APPLY_URL)
+    job, proposal = _job(), _proposal()
+
+    n = submit._fill_screening_questions(page, job, proposal)
+
+    assert n == 2
+    assert q1.filled_with == "ANSWER for: Describe your recent experience with similar projects"
+    assert q2.filled_with == "ANSWER for: Please attach any portfolio with retro pixel art style."
+    assert cover_el.filled_with is None
+    assert already_has_value.filled_with is None
+    assert unlabeled.filled_with is None
+    assert hidden.filled_with is None
+    assert calls == [
+        "Describe your recent experience with similar projects",
+        "Please attach any portfolio with retro pixel art style.",
+    ]
+
+
+def test_generate_screening_answer_uses_job_and_proposal_context(monkeypatch):
+    captured = {}
+
+    def fake_call_llm(messages, **k):
+        captured["prompt"] = messages[0]["content"]
+        return "  A concrete, first-person answer.  "
+
+    monkeypatch.setattr("ai.call_llm", fake_call_llm)
+    job = types.SimpleNamespace(id=1, title="Unity multiplayer job", description="Needs Photon rollback netcode.")
+    proposal = types.SimpleNamespace(content="We built a rollback netcode system for...")
+
+    answer = submit.generate_screening_answer(
+        "Have you previously worked with Photon Quantum?", job, proposal
+    )
+
+    assert answer == "A concrete, first-person answer."
+    assert "Photon Quantum" in captured["prompt"]
+    assert "Unity multiplayer job" in captured["prompt"]
+    assert "rollback netcode system" in captured["prompt"]
+
+
+def test_generate_screening_answer_returns_empty_on_llm_error(monkeypatch):
+    def boom(messages, **k):
+        raise RuntimeError("LLM down")
+
+    monkeypatch.setattr("ai.call_llm", boom)
+    job = types.SimpleNamespace(id=1, title="X", description="Y")
+    proposal = types.SimpleNamespace(content="Z")
+
+    assert submit.generate_screening_answer("Q?", job, proposal) == ""
+
+
+def test_fill_screening_questions_defensive_when_locator_errors():
+    page = FakePage({}, body="", url=APPLY_URL)  # "textarea" not in _locators → FakeLocator(count=0)
+    job, proposal = _job(), _proposal()
+    assert submit._fill_screening_questions(page, job, proposal) == 0
