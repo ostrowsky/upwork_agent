@@ -436,8 +436,15 @@ def test_attach_files_empty_paths():
 
 def test_attachment_paths_defensive_on_bad_db():
     # FakeDB has no .query → must not raise, returns [].
-    assert submit.attachment_paths_for_job(FakeDB(), 1) == []
-    assert submit.attachment_paths_for_job(FakeDB(), None) == []
+    proposal = _proposal()
+    proposal.selected_cases = "[1, 2]"
+    assert submit.attachment_paths_for_proposal(FakeDB(), proposal) == []
+    assert submit.attachment_paths_for_proposal(FakeDB(), None) == []
+
+
+def test_attachment_paths_no_selected_cases():
+    # _proposal() has no selected_cases attribute at all → must not raise.
+    assert submit.attachment_paths_for_proposal(FakeDB(), _proposal()) == []
 
 
 def test_empty_rate_config_keeps_profile_default(monkeypatch):

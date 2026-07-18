@@ -12,6 +12,7 @@ The pure guard/url logic is unit-tested; the browser part is isolated.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 from datetime import datetime, timezone
@@ -454,32 +455,67 @@ def attach_case_enabled() -> bool:
     return os.getenv("ATTACH_CASE_PDF", "1").strip().lower() in ("1", "true", "yes")
 
 
-def attachment_paths_for_job(db, job_id) -> list[str]:
-    """Existing PDF artifacts of synthetic cases generated for this job. Defensive."""
-    if job_id is None:
+def attachment_paths_for_proposal(db, proposal: Proposal) -> list[str]:
+    """PDF artifacts of the case studies selected for THIS proposal.
+
+    ``CaseStudy.job_id`` is the job the case study was originally generated
+    for (or None for seed/library cases) — NOT the job being applied to now,
+    so filtering on the current job's id never matches. The proposal's own
+    ``selected_cases`` (case-study ids chosen by the draft step) is the
+    correct link. Defensive: never raises.
+    """
+    if proposal is None or not getattr(proposal, "selected_cases", None):
+        return []
+    try:
+        case_ids = json.loads(proposal.selected_cases)
+    except (TypeError, ValueError):
+        return []
+    if not case_ids:
         return []
     try:
         from database import CaseStudy
 
         rows = (
             db.query(CaseStudy)
-            .filter(CaseStudy.job_id == job_id, CaseStudy.deleted == 0,
-                    CaseStudy.artifact_path.isnot(None))
-            .order_by(CaseStudy.created_at.desc())
+            .filter(CaseStudy.id.in_(case_ids), CaseStudy.deleted == 0)
             .all()
         )
         paths = []
         attach_png = os.getenv("ATTACH_CASE_PNG", "1").strip().lower() in ("1", "true", "yes")
         for r in rows:
-            if r.artifact_path and os.path.exists(r.artifact_path):
-                paths.append(r.artifact_path)
-                # Attach the visual infographic (PNG) alongside the PDF, if present.
-                png = os.path.splitext(r.artifact_path)[0] + ".png"
-                if attach_png and os.path.exists(png):
-                    paths.append(png)
+            pdf_path = r.artifact_path if (r.artifact_path and os.path.exists(r.artifact_path)) else None
+            if not pdf_path:
+                # Most library/seed cases never had a PDF rendered — generate
+                # one now rather than silently skipping the attachment.
+                pdf_path = _render_case_artifact_now(db, r)
+            if not pdf_path:
+                continue
+            paths.append(pdf_path)
+            # Attach the visual infographic (PNG) alongside the PDF, if present.
+            png = os.path.splitext(pdf_path)[0] + ".png"
+            if attach_png and os.path.exists(png):
+                paths.append(png)
         return paths
     except Exception:  # noqa: BLE001 — fake/unsupported db in tests, or query error
         return []
+
+
+def _render_case_artifact_now(db, case_study) -> str | None:
+    """Best-effort: render this case study's PDF (+PNG) on demand and persist
+    the path, so a proposal can attach it even if it was never pre-rendered."""
+    try:
+        from case_artifacts import render_case_pdf, render_case_png
+
+        pdf_path = render_case_pdf(case_study)
+        try:
+            render_case_png(case_study)
+        except Exception:  # noqa: BLE001 — PNG is a nice-to-have, PDF is what matters
+            pass
+        case_study.artifact_path = pdf_path
+        db.commit()
+        return pdf_path
+    except Exception:  # noqa: BLE001 — never let attachment generation block a submit
+        return None
 
 
 def _attach_files(page, paths: list[str]) -> dict:
@@ -703,10 +739,10 @@ def _apply_on_page(page, url: str, job: Job, proposal: Proposal, db, dry_run: bo
     # Agency accounts: pick the applicant identity (freelancer/agency), else Send is hidden.
     _select_applicant(page)
 
-    # Attach the generated case study PDF(s) for this job, if any (best-effort).
+    # Attach the case-study PDF(s) selected for this proposal, if any (best-effort).
     attach = {"attached": 0, "reason": "disabled"}
     if attach_case_enabled():
-        attach = _attach_files(page, attachment_paths_for_job(db, getattr(job, "id", None)))
+        attach = _attach_files(page, attachment_paths_for_proposal(db, proposal))
 
     bid = _fill_bid(page, job, proposal)
     rate_increase = _fill_rate_increase(page)
