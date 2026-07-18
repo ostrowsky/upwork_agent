@@ -594,7 +594,17 @@ def _apply_on_page(page, url: str, job: Job, proposal: Proposal, db, dry_run: bo
             continue
     page.wait_for_timeout(1500)
 
-    cover = page.locator(cover_sel).first
+    # The apply form has THREE textareas (cover letter, portfolio note, similar-
+    # experience note). CSS fallbacks as broad as `textarea` pick whichever one
+    # is first in DOM order — if Upwork reshuffles the form, that silently fills
+    # the wrong box and leaves the real cover letter empty (Upwork then rejects
+    # the submit client-side, which looks like "not confirmed" with no error we
+    # can detect). Match by the visible "Cover Letter" label first — that's tied
+    # to the field semantically, not by position — and only fall back to the
+    # old positional selector if no labelled field is found.
+    cover = page.get_by_label(re.compile("cover letter", re.I)).first
+    if not cover.count():
+        cover = page.locator(cover_sel).first
     filled = False
     if cover.count():
         cover.fill(proposal.content)

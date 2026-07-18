@@ -84,6 +84,11 @@ class FakePage:
     def locator(self, sel):
         return self._locators.get(sel, FakeLocator(count=0))
 
+    def get_by_label(self, label, **k):
+        # No fixture sets up a labelled match — every test exercises the
+        # positional-selector fallback, same as before this method existed.
+        return FakeLocator(count=0)
+
     def inner_text(self, sel, timeout=None):
         return self._body if sel == "body" else ""
 
