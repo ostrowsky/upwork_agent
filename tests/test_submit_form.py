@@ -553,6 +553,96 @@ def test_fill_profile_highlights_no_tab_is_noop():
     assert submit._fill_profile_highlights(page) is False
 
 
+def test_confirm_dialog_ticks_acknowledgement_before_continue():
+    """Fixed-price modal: Continue stays disabled until the box is ticked."""
+    ack = FakeLocator(count=1)
+    confirm = FakeLocator(count=1)
+    page = FakePage({
+        S.APPLY_CONFIRM_ACKNOWLEDGE: ack,
+        S.APPLY_CONFIRM_BUTTON: confirm,
+    }, url=APPLY_URL)
+
+    assert submit._confirm_dialog(page) is True
+    assert ack.actions == ["click"]
+    assert confirm.actions == ["click"]
+
+
+def test_confirm_dialog_without_acknowledgement_still_confirms():
+    # Hourly-style modal variant: no checkbox, button already enabled.
+    confirm = FakeLocator(count=1)
+    page = FakePage({S.APPLY_CONFIRM_BUTTON: confirm}, url=APPLY_URL)
+
+    assert submit._confirm_dialog(page) is True
+    assert confirm.actions == ["click"]
+
+
+def test_confirm_dialog_noop_when_no_modal():
+    page = FakePage({}, url=APPLY_URL)  # no modal appeared at all
+    assert submit._confirm_dialog(page) is False
+
+
+def test_fill_milestones_fills_empty_description():
+    row = FakeTextareaEl(value="")
+    page = FakePage({S.APPLY_MILESTONE_DESCRIPTION: FakeMultiLocator([row])}, url=APPLY_URL)
+
+    assert submit._fill_milestones(page, _job()) == 1
+    assert row.filled_with == "Full delivery: Unity job"
+
+
+def test_fill_milestones_skips_row_that_already_has_text():
+    row = FakeTextareaEl(value="Phase 1 agreed with client")
+    page = FakePage({S.APPLY_MILESTONE_DESCRIPTION: FakeMultiLocator([row])}, url=APPLY_URL)
+
+    assert submit._fill_milestones(page, _job()) == 0
+    assert row.filled_with is None  # operator's own text left untouched
+
+
+def test_fill_milestones_noop_on_hourly_form():
+    # An hourly apply form has no milestone section at all.
+    page = FakePage({}, url=APPLY_URL)
+    assert submit._fill_milestones(page, _job()) == 0
+
+
+def test_fill_milestones_labels_extra_rows_distinctly():
+    rows = [FakeTextareaEl(value=""), FakeTextareaEl(value="")]
+    page = FakePage({S.APPLY_MILESTONE_DESCRIPTION: FakeMultiLocator(rows)}, url=APPLY_URL)
+
+    assert submit._fill_milestones(page, _job()) == 2
+    assert rows[0].filled_with == "Full delivery: Unity job"
+    assert rows[1].filled_with == "Stage 2"
+
+
+def test_client_stated_duration_read_from_job_posting():
+    page = FakePage({}, body="Expert  $10,000  3 to 6 months  Project length", url=APPLY_URL)
+    assert submit._client_stated_duration(page) == "3 to 6 months"
+
+
+def test_client_stated_duration_absent_returns_empty():
+    page = FakePage({}, body="nothing about length here", url=APPLY_URL)
+    assert submit._client_stated_duration(page) == ""
+
+
+def test_fill_project_duration_prefers_env_override(monkeypatch):
+    monkeypatch.setenv("PROPOSAL_DURATION", "More than 6 months")
+    prefer_sel = ('.air3-menu-item:visible:has-text("More than 6 months"), '
+                  '[role="option"]:visible:has-text("More than 6 months")')
+    chosen = FakeLocator(count=1)
+    locs = {
+        S.apply_rate_increase_toggle(S.APPLY_DURATION_LABEL): FakeLocator(count=1),
+        prefer_sel: chosen,
+    }
+    # Body says "1 to 3 months", but the explicit override must win over it.
+    page = FakePage(locs, body="1 to 3 months", url=APPLY_URL)
+
+    assert submit._fill_project_duration(page) is True
+    assert chosen.actions == ["click"]
+
+
+def test_fill_project_duration_noop_on_hourly_form():
+    page = FakePage({}, body="", url=APPLY_URL)  # no duration dropdown present
+    assert submit._fill_project_duration(page) is False
+
+
 def test_fill_profile_highlights_no_items_cancels_modal():
     locs = {
         S.APPLY_HIGHLIGHTS_PORTFOLIO_TAB: FakeLocator(count=1),

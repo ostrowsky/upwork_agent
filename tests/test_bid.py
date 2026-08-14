@@ -74,6 +74,27 @@ def test_compute_fixed_override_wins(monkeypatch):
     assert submit.compute_fixed_amount(job, proposal) == "1234"
 
 
+def test_compute_fixed_capped_at_client_budget():
+    # Estimate tops out at $17k on a $10k job -> bid the client's budget, not $17k.
+    job = _job("Fixed-price: $10000")
+    proposal = types.SimpleNamespace(estimate="Phases $3k-$5k. Total: $10,000 - $17,000.")
+    assert submit.compute_fixed_amount(job, proposal) == "10000"
+
+
+def test_compute_fixed_below_budget_is_not_raised():
+    # Capping must never inflate a deliberately lower bid up to the budget.
+    job = _job("Fixed-price: $10000")
+    proposal = types.SimpleNamespace(estimate="Total: $6,000")
+    assert submit.compute_fixed_amount(job, proposal) == "6000"
+
+
+def test_compute_fixed_override_beats_budget_cap(monkeypatch):
+    monkeypatch.setenv("BID_FIXED_AMOUNT", "25000")
+    job = _job("Fixed-price: $10000")
+    proposal = types.SimpleNamespace(estimate="Total: $17,000")
+    assert submit.compute_fixed_amount(job, proposal) == "25000"
+
+
 def test_compute_fixed_falls_back_to_budget():
     job = _job("Fixed-price: $800")
     proposal = types.SimpleNamespace(estimate=None)

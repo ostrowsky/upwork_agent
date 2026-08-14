@@ -83,6 +83,17 @@ APPLY_DROPDOWN_OPTION = (
 )
 APPLY_PERCENT_TOGGLE = '.air3-dropdown[aria-label*="How much"] [data-test="dropdown-toggle"]'
 
+# FIXED-PRICE jobs only — an hourly apply form has none of these.
+# Upwork defaults to "By milestone" and then requires a description per milestone
+# row (the due date is optional; the amount is the currency input APPLY_RATE_FIXED
+# already targets). A fixed-price form also requires the project-duration dropdown,
+# whose combobox is labelled via aria-labelledby (NOT aria-label), so it is matched
+# by label text through get_by_label rather than the apply_rate_increase_toggle
+# selectors used for the rate-increase dropdowns.
+APPLY_MILESTONE_ROW = '[data-test="milestone"]'
+APPLY_MILESTONE_DESCRIPTION = 'input[data-test="milestone-description"]'
+APPLY_DURATION_LABEL = "How long will this project take"
+
 # Primary submit button usually reads "Send for N Connects", but Upwork also
 # serves a plain "Submit proposal" variant (no connects amount on the button
 # itself — the cost is only shown earlier, in "This proposal requires N
@@ -110,10 +121,18 @@ APPLY_ERROR = (
 # Some flows pop a final confirmation dialog after the first Send click.
 # Best-effort: a primary Send/Submit button INSIDE a modal dialog.
 APPLY_CONFIRM_BUTTON = (
+    'button[data-ev-label="fixed_price_confirmation_continue"], '
     '[role="dialog"] button:has-text("Send for"), '
     '[role="dialog"] button:has-text("Send"), '
     '[role="dialog"] button:has-text("Submit"), '
     '.air3-modal button.air3-btn-primary'
+)
+# Fixed-price proposals pop a "3 things you need to know" disclosure after Send,
+# whose Continue button stays disabled="disabled" until this box is ticked. The
+# <input> is sr-only, so the LABEL is the clickable target.
+APPLY_CONFIRM_ACKNOWLEDGE = (
+    'label[data-test="understand-and-agree"], '
+    '.air3-modal label.air3-checkbox-label'
 )
 # Attachment file input on the apply form (hidden <input type=file>).
 # Candidates tried in order; we set files directly on the input (no click needed).

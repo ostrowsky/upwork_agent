@@ -118,9 +118,16 @@ def compute_fixed_amount(job: Job, proposal: Proposal | None) -> str | None:
         return override
     # Prefer the largest amount in the estimate (usually the project total).
     est_vals = parse_money(getattr(proposal, "estimate", None)) if proposal else []
-    if est_vals:
-        return _fmt(max(est_vals))
     budget_vals = [v for v in parse_money(job.budget) if v > 0]
+    if est_vals:
+        amount = max(est_vals)
+        # Never bid over the client's stated budget. The estimate's top end is an
+        # internal range (e.g. "$10,000 - $17,000" on a $10k job); bidding it puts
+        # us above budget, where clients commonly filter the proposal out before
+        # ever reading it. BID_FIXED_AMOUNT above still overrides this deliberately.
+        if budget_vals:
+            amount = min(amount, max(budget_vals))
+        return _fmt(amount)
     return _fmt(max(budget_vals)) if budget_vals else None
 
 
@@ -389,6 +396,108 @@ def _fill_rate_increase(page) -> bool:
     if pct_toggle.count():
         _select_air3_dropdown(page, "How much", os.getenv("RATE_INCREASE_PERCENT", "").strip())
     return freq
+
+
+def _confirm_dialog(page) -> bool:
+    """Clear the post-Send confirmation modal, if one appeared.
+
+    FIXED-PRICE proposals get a "3 things you need to know" disclosure whose
+    "Continue to submit" button is rendered disabled until the "Yes, I
+    understand." box is ticked — so clicking Continue straight away does
+    nothing, the proposal never lands, and the run reports a bare
+    "not confirmed" with the form still on screen. The checkbox <input> is
+    sr-only, hence we click its LABEL. Hourly flows show no modal → no-op.
+    Returns True if a confirm button was clicked.
+    """
+    try:
+        confirm = page.locator(S.APPLY_CONFIRM_BUTTON).first
+        if not confirm.count():
+            return False
+        ack = page.locator(S.APPLY_CONFIRM_ACKNOWLEDGE).first
+        if ack.count():
+            try:
+                ack.click(timeout=5000)
+                page.wait_for_timeout(500)  # let Vue re-enable the button
+            except Exception:  # noqa: BLE001 — no ack box in this modal variant
+                pass
+        # Bounded: a still-disabled button must fail fast, not burn the default 30s.
+        confirm.click(timeout=10000)
+        return True
+    except Exception:  # noqa: BLE001 — never let the dialog step mask the result
+        return False
+
+
+def _milestone_description(job: Job, index: int) -> str:
+    """Scope label for milestone row ``index`` (0-based).
+
+    We render ONE milestone covering the whole engagement — the amount field
+    holds the project total — so row 0 describes the full delivery rather than
+    a phase. Extra rows (only if Upwork ever pre-renders more) get a generic
+    stage label so none is left empty and blocking the submit.
+    """
+    if index > 0:
+        return f"Stage {index + 1}"
+    title = re.sub(r"\s+", " ", (getattr(job, "title", "") or "")).strip()
+    return f"Full delivery: {title[:70]}" if title else "Full project delivery"
+
+
+def _fill_milestones(page, job: Job) -> int:
+    """Fill empty milestone description inputs on a FIXED-PRICE apply form.
+
+    Upwork defaults fixed-price proposals to "By milestone" and then rejects the
+    submit with "A description is needed" until every row has one — an hourly
+    form has no such section, so this no-ops there. The due date is optional and
+    the amount is already handled by _fill_bid, so only the description matters.
+    Returns how many rows were filled.
+    """
+    filled = 0
+    try:
+        rows = page.locator(S.APPLY_MILESTONE_DESCRIPTION)
+        n = rows.count()
+    except Exception:  # noqa: BLE001
+        return 0
+    for i in range(n):
+        inp = rows.nth(i)
+        try:
+            if not inp.is_visible():
+                continue
+            if (inp.input_value() or "").strip():
+                continue  # already filled (operator-typed or pre-populated)
+            inp.fill(_milestone_description(job, i))
+            filled += 1
+        except Exception:  # noqa: BLE001
+            continue
+    return filled
+
+
+# Upwork's fixed-price project-length values, longest-match-last so a substring
+# test can't let "1 to 3 months" shadow "3 to 6 months".
+_DURATION_CHOICES = (
+    "Less than 1 month", "1 to 3 months", "3 to 6 months", "More than 6 months",
+)
+
+
+def _client_stated_duration(page) -> str:
+    """The project length the CLIENT put on the job post, if shown on the page.
+
+    Matching their own wording keeps our answer from contradicting the posting.
+    """
+    body = (_body_text(page) or "").lower()
+    for choice in _DURATION_CHOICES:
+        if choice.lower() in body:
+            return choice
+    return ""
+
+
+def _fill_project_duration(page) -> bool:
+    """Select the required "How long will this project take?" duration.
+
+    Fixed-price only; blocks the submit with "Value is required and can't be
+    empty." when unset. Preference order: PROPOSAL_DURATION override → the
+    length the client stated on the job → the first option in the menu.
+    """
+    prefer = os.getenv("PROPOSAL_DURATION", "").strip() or _client_stated_duration(page)
+    return _select_air3_dropdown(page, S.APPLY_DURATION_LABEL, prefer)
 
 
 def _fill_profile_highlights(page) -> bool:
@@ -786,6 +895,9 @@ def _apply_on_page(page, url: str, job: Job, proposal: Proposal, db, dry_run: bo
 
     bid = _fill_bid(page, job, proposal)
     rate_increase = _fill_rate_increase(page)
+    # Fixed-price-only required fields (both no-op on an hourly form).
+    milestones = _fill_milestones(page, job)
+    duration = _fill_project_duration(page)
     connects = _read_connects_required(page)
     # Cache the per-proposal cost so the UI can show "Отправить за N connects".
     # No commit here (the SENT path commits; dry-run commits in its branch below).
@@ -810,7 +922,8 @@ def _apply_on_page(page, url: str, job: Job, proposal: Proposal, db, dry_run: bo
                 pass
         return {"ok": True, "submitted": False, "dry_run": True,
                 "reason": (f"dry-run (filled={filled}, screening={screening_filled}, bid={bid}, "
-                           f"rate_inc={rate_increase}, highlight={highlight_added}, "
+                           f"rate_inc={rate_increase}, milestones={milestones}, "
+                           f"duration={duration}, highlight={highlight_added}, "
                            f"attached={attach['attached']}/verified={attach.get('verified', 0)}; {dbg})"),
                 "connects": connects, "attached": attach["attached"],
                 "attached_verified": attach.get("verified", 0)}
@@ -836,13 +949,8 @@ def _apply_on_page(page, url: str, job: Job, proposal: Proposal, db, dry_run: bo
     send.click()
     page.wait_for_timeout(3000)
 
-    # Some flows show a final confirmation dialog — click it if present.
-    try:
-        confirm = page.locator(S.APPLY_CONFIRM_BUTTON).first
-        if confirm.count():
-            confirm.click()
-    except Exception:  # noqa: BLE001
-        pass
+    # Some flows show a final confirmation dialog — clear it if present.
+    _confirm_dialog(page)
     page.wait_for_timeout(5000)
 
     # Verify the submit went through. Upwork redirects to "My proposals" on
