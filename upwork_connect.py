@@ -7,8 +7,10 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -66,14 +68,50 @@ def project_profile_dir() -> Path:
     return PROJECT_PROFILE.parent / f"upwork_profile_{channel}"
 
 
+def real_user_data() -> Path | None:
+    """The operator's OWN browser profile — for the channel the agent drives.
+
+    Must match the channel: pointing an Edge run at Chrome's User Data dir (or
+    vice versa) does not work, and that mismatch was the only thing
+    UPWORK_USE_CHROME_PROFILE could produce for an msedge agent, since
+    edge_user_data() was never wired in. Returns None for bundled chromium,
+    which has no "real" profile to borrow.
+    """
+    channel = browser_channel()
+    if channel == "chrome":
+        return chrome_user_data()
+    if channel == "msedge":
+        return edge_user_data()
+    return None
+
+
+def use_real_profile() -> bool:
+    """Reuse the operator's own logged-in browser profile instead of the
+    project's private one.
+
+    Worth it when Upwork blocks the agent's separate profile but the personal
+    one signs in fine. The cost: Playwright needs the profile EXCLUSIVELY, so
+    the personal browser must be fully closed while the agent runs — and the
+    stuck-profile self-heal will force-kill it.
+
+    UPWORK_USE_REAL_PROFILE is the accurate name; UPWORK_USE_CHROME_PROFILE is
+    kept as its original alias so existing .env files keep working.
+    """
+    for name in ("UPWORK_USE_REAL_PROFILE", "UPWORK_USE_CHROME_PROFILE"):
+        val = os.getenv(name)
+        if val is not None:
+            return val.strip().lower() in ("1", "true", "yes")
+    return True
+
+
 def pick_profile_dir() -> Path:
     custom = os.getenv("UPWORK_USER_DATA_DIR", "").strip()
     if custom:
         return Path(custom)
-    if os.getenv("UPWORK_USE_CHROME_PROFILE", "1").strip() in ("1", "true", "yes"):
-        chrome = chrome_user_data()
-        if chrome:
-            return chrome
+    if use_real_profile():
+        real = real_user_data()
+        if real:
+            return real
     return project_profile_dir()
 
 
@@ -213,6 +251,46 @@ def _bootstrap_cookies(context) -> None:
         pass
 
 
+def auto_login_enabled() -> bool:
+    """Try the saved .env credentials before reporting a dead session (default on).
+
+    Set UPWORK_AUTO_LOGIN=0 if Upwork starts answering scripted logins with a
+    CAPTCHA or "Due to technical difficulties" — repeated attempts make that
+    worse, and only a manual login can clear it.
+    """
+    return os.getenv("UPWORK_AUTO_LOGIN", "1").strip().lower() in ("1", "true", "yes")
+
+
+def _auto_login_cooldown_s() -> int:
+    try:
+        return int(os.getenv("AUTO_LOGIN_COOLDOWN", "1800"))
+    except (TypeError, ValueError):
+        return 1800
+
+
+def _auto_login_allowed_now() -> bool:
+    """Rate-limit auto-login attempts.
+
+    probe_session runs every worker tick; without this, a session that stays
+    dead would fire a login attempt every few minutes and get the account
+    flagged as a bot. One attempt per cooldown window, persisted so a worker
+    restart can't reset it.
+    """
+    state = BASE_DIR / "data" / "auto_login_state.json"
+    try:
+        last = json.loads(state.read_text(encoding="utf-8")).get("last_attempt", 0)
+    except (OSError, ValueError, AttributeError):
+        last = 0
+    if time.time() - float(last or 0) < _auto_login_cooldown_s():
+        return False
+    try:
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text(json.dumps({"last_attempt": time.time()}), encoding="utf-8")
+    except OSError:
+        pass
+    return True
+
+
 def try_auto_login(page) -> None:
     email = os.getenv("UPWORK_EMAIL", "").strip()
     password = os.getenv("UPWORK_PASSWORD", "").strip()
@@ -269,6 +347,19 @@ def probe_session(headless: bool | None = None) -> dict:
             page.goto(AUTH_CHECK_URLS[0], wait_until="domcontentloaded", timeout=60000)
             page.wait_for_timeout(3000)
             ok, reason = is_logged_in(page)
+            # Session died → try the saved .env credentials before giving up, so a
+            # logged-out agent can recover on its own instead of waiting for a
+            # human to run `upwork_connect.py --login`. Rate-limited: Upwork
+            # answers repeated scripted logins with a CAPTCHA we cannot solve.
+            if not ok and auto_login_enabled() and _auto_login_allowed_now():
+                try:
+                    try_auto_login(page)
+                    page.goto(AUTH_CHECK_URLS[0], wait_until="domcontentloaded", timeout=60000)
+                    page.wait_for_timeout(4000)
+                    ok, retry_reason = is_logged_in(page)
+                    reason = f"auto-login: {retry_reason}"
+                except Exception as e:  # noqa: BLE001 — never let it kill the probe
+                    reason = f"{reason}; auto-login failed ({type(e).__name__})"
             result = {
                 "ok": ok,
                 "reason": reason,
