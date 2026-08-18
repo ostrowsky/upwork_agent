@@ -73,7 +73,12 @@ def _how_to_start_browser(port: int) -> None:
     print("Close Edge completely (run stop_bot.bat), then start it like this:\n")
     print(f'  "{exe}" --remote-debugging-port={port}\n')
     print("Log in to Upwork in that window, then re-run this script.")
-    print("You can keep using that browser normally -- it stays open.")
+    print("You can keep using that browser normally -- it stays open.\n")
+    print("To check whether Edge is really listening:")
+    print(f"  curl http://127.0.0.1:{port}/json/version")
+    print(f"  netstat -ano | findstr :{port}")
+    print("Nothing there means Edge ignored the flag -- it does that when another")
+    print("Edge process is still alive, so run stop_bot.bat before starting it.")
 
 
 def _arg_port(args: list[str]) -> int:
@@ -101,10 +106,17 @@ def main() -> int:
 
     print(f"Connecting to your browser on port {port}...")
     with sync_playwright() as p:
-        try:
-            browser = p.chromium.connect_over_cdp(f"http://localhost:{port}", timeout=15000)
-        except Exception as e:  # noqa: BLE001 — expected when the port isn't open
-            print(f"  {type(e).__name__}: {str(e)[:120]}")
+        browser = None
+        # 127.0.0.1 FIRST, not "localhost": where localhost resolves to IPv6 the
+        # connect fails with "ECONNREFUSED ::1" even though Edge is listening --
+        # it binds the debug port on IPv4 only.
+        for host in ("127.0.0.1", "localhost"):
+            try:
+                browser = p.chromium.connect_over_cdp(f"http://{host}:{port}", timeout=15000)
+                break
+            except Exception as e:  # noqa: BLE001 — expected when the port isn't open
+                print(f"  {host}: {type(e).__name__}: {str(e)[:100]}")
+        if browser is None:
             _how_to_start_browser(port)
             return 1
         try:

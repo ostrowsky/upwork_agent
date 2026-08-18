@@ -449,6 +449,14 @@ def run_connect(headless: bool = True, manual_login: bool = False) -> int:
             print(f"After auto-login: {'CONNECTED' if ok else 'FAIL'} ({reason})")
             print(f"  URL: {page.url[:100]}")
 
+            if ok:
+                # Keep the portable session file current, same as probe_session
+                # does — otherwise a CLI auto-login leaves a stale storage_state
+                # behind and nothing else refreshes it.
+                state_path = BASE_DIR / "data" / "upwork_storage_state.json"
+                context.storage_state(path=str(state_path))
+                print(f"  Session saved: {state_path}")
+
             if not ok:
                 print()
                 print("Сохраните сессию в профиль проекта:")
