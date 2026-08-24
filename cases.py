@@ -106,6 +106,28 @@ def build_case_gen_messages(job, task) -> list[dict]:
     return [{"role": "system", "content": CASE_GEN_SYSTEM}, {"role": "user", "content": user}]
 
 
+def _as_text(value, limit: int | None = None) -> str | None:
+    """Coerce an LLM field that must be scalar text into a string.
+
+    The model does not always honour the requested shape: `stack` has come back
+    as ["Unity", "Photon", "C#"] instead of a string, and SQLite cannot bind a
+    list, so the INSERT raised ProgrammingError and took the whole UI page down.
+    Lists are flattened to a comma-joined string; empty/blank becomes None.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple, set)):
+        value = ", ".join(str(x).strip() for x in value if str(x).strip())
+    elif isinstance(value, dict):
+        value = ", ".join(f"{k}: {v}" for k, v in value.items())
+    else:
+        value = str(value)
+    value = value.strip()
+    if not value:
+        return None
+    return value[:limit] if limit else value
+
+
 def generate_case_for_job(job, task, db, llm=None, render: bool = True) -> dict:
     """Fabricate a job-tailored case, save it (synthetic=1), render a PDF+PNG attachment.
 
@@ -138,12 +160,14 @@ def generate_case_for_job(job, task, db, llm=None, render: bool = True) -> dict:
         return {"ok": False, "case_id": None, "artifact_path": None, "png_path": None,
                 "title": None, "reason": "case too thin (no results/metrics) — use an existing case"}
     case = CaseStudy(
-        title=str(data.get("title")).strip()[:255],
-        niche=(data.get("niche") or None),
-        stack=(data.get("stack") or None),
-        description=str(data.get("summary") or data.get("title")),
+        # Every scalar text field goes through _as_text: the model returns a
+        # list here often enough that an uncoerced value crashes the insert.
+        title=_as_text(data.get("title"), 255) or "Untitled case",
+        niche=_as_text(data.get("niche"), 255),
+        stack=_as_text(data.get("stack")),
+        description=_as_text(data.get("summary")) or _as_text(data.get("title")) or "",
         result="\n".join(results) or None,
-        budget_range=(data.get("budget_range") or None),
+        budget_range=_as_text(data.get("budget_range"), 100),
         synthetic=1,
         job_id=getattr(job, "id", None),
     )

@@ -16,8 +16,17 @@ _PUNCT = {
 }
 
 
-def clean_text(s: str | None) -> str:
-    """Normalize unicode to glyphs a base TTF/PDF font can render (no tofu boxes)."""
+def clean_text(s) -> str:
+    """Normalize unicode to glyphs a base TTF/PDF font can render (no tofu boxes).
+
+    Accepts non-strings: several layout fields (role, duration, stack) come
+    straight from the LLM, which sometimes returns a list where text was asked
+    for, and `.replace` on a list would abort the whole render.
+    """
+    if isinstance(s, (list, tuple, set)):
+        s = ", ".join(str(x).strip() for x in s if str(x).strip())
+    elif s is not None and not isinstance(s, str):
+        s = str(s)
     s = s or ""
     for k, v in _PUNCT.items():
         s = s.replace(k, v)

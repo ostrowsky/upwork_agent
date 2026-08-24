@@ -93,3 +93,55 @@ def test_render_case_pdf_from_dict(tmp_path):
     )
     assert os.path.exists(path)
     assert os.path.getsize(path) > 500  # a real PDF, not empty
+
+
+# --- LLM returning lists where scalar text was asked for -------------------
+# Observed live 2026-08-24: stack came back as ["Unity","Photon","C#"], SQLite
+# refused to bind a list, and the whole Jobs page died with ProgrammingError.
+
+def test_as_text_flattens_list():
+    assert cases._as_text(["Unity", "Photon", "C#"]) == "Unity, Photon, C#"
+
+
+def test_as_text_passes_string_through():
+    assert cases._as_text("  Unity, C#  ") == "Unity, C#"
+
+
+def test_as_text_none_and_blank_become_none():
+    assert cases._as_text(None) is None
+    assert cases._as_text("   ") is None
+    assert cases._as_text([]) is None
+    assert cases._as_text(["", "  "]) is None
+
+
+def test_as_text_respects_column_limit():
+    assert cases._as_text("x" * 400, 255) == "x" * 255
+
+
+def test_as_text_flattens_dict():
+    assert cases._as_text({"engine": "Unity"}) == "engine: Unity"
+
+
+def test_generate_case_persists_when_stack_is_a_list(db):
+    """The exact live failure: a list-valued stack must not break the insert."""
+    payload = json.loads(_SAMPLE)
+    payload["stack"] = ["Unity", "Photon", "C#", "Tiled Animator"]
+    payload["niche"] = ["Mobile Pixel Art", "Multiplayer"]
+    job = Job(title="Pixel art intro clip", description="Unity + Photon", status="NEW")
+    db.add(job)
+    db.commit()
+
+    res = cases.generate_case_for_job(job, None, db, llm=lambda m: json.dumps(payload),
+                                      render=False)
+
+    assert res["ok"] is True, res.get("reason")
+    saved = db.query(CaseStudy).filter(CaseStudy.id == res["case_id"]).first()
+    assert saved.stack == "Unity, Photon, C#, Tiled Animator"
+    assert saved.niche == "Mobile Pixel Art, Multiplayer"
+
+
+def test_clean_text_accepts_a_list():
+    # role/duration/stack reach the PDF layout straight from the LLM.
+    assert case_artifacts.clean_text(["Unity", "Photon"]) == "Unity, Photon"
+    assert case_artifacts.clean_text(None) == ""
+    assert case_artifacts.clean_text(42) == "42"
