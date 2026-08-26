@@ -21,7 +21,7 @@ import signal
 import sys
 import time
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -63,6 +63,39 @@ def setup_logging() -> None:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _now_ts() -> float:
+    """Epoch seconds — for cooldown arithmetic that survives a worker restart."""
+    return time.time()
+
+
+def should_alert(prev: dict, anomalies: list[str], now: float | None = None) -> bool:
+    """Whether this tick's anomalies warrant pushing an alert.
+
+    "Changed since the last tick" alone is not enough: a flapping session
+    (down -> up -> down) or a worker restart makes the set differ again and
+    again, which is how the same session_down alert went out four times in an
+    hour. A NEW set alerts immediately; an unchanged one waits out
+    ALERT_REPEAT_COOLDOWN.
+    """
+    if not anomalies:
+        return False
+    if anomalies != prev.get("alerted_anomalies"):
+        return True
+    age = (now if now is not None else _now_ts()) - float(prev.get("alerted_at") or 0)
+    return age >= _int_env("ALERT_REPEAT_COOLDOWN", 3600, minimum=0)
+
+
+def report_day_for(now: datetime) -> str:
+    """Which day the daily report should describe.
+
+    The report fires on the first tick of a new UTC day, so the day worth
+    reporting is the one that just ended. Labelling it with the current day
+    reported a day that was minutes old, which always looked like "nothing
+    happened".
+    """
+    return (now.date() - timedelta(days=1)).isoformat()
 
 
 def read_status() -> dict:
@@ -321,23 +354,36 @@ def tick() -> dict:
         pass
     fields["anomalies"] = detect_anomalies(fields)
 
-    # Alert on NEW anomalies (don't spam: only when the set changed since last tick).
-    # `prev` was captured at tick start (before this tick wrote anything).
-    if fields["anomalies"] and fields["anomalies"] != prev.get("anomalies"):
-        try:
-            from reporting import send_alert
+    # Alert on NEW anomalies. "Changed since last tick" alone is not enough:
+    # a flapping session (down -> up -> down) or a worker restart makes the set
+    # differ again and again, which is how the same session_down alert got sent
+    # four times in an hour. Re-send an UNCHANGED set only after a cooldown.
+    if fields["anomalies"]:
+        if should_alert(prev, fields["anomalies"]):
+            try:
+                from reporting import send_alert
 
-            send_alert("worker anomalies: " + ", ".join(fields["anomalies"]))
-        except Exception:  # noqa: BLE001
-            pass
+                send_alert("worker anomalies: " + ", ".join(fields["anomalies"]))
+                fields["alerted_anomalies"] = fields["anomalies"]
+                fields["alerted_at"] = _now_ts()
+            except Exception:  # noqa: BLE001
+                pass
+        else:
+            # Keep the existing alert stamp so the cooldown actually elapses.
+            fields["alerted_anomalies"] = prev.get("alerted_anomalies")
+            fields["alerted_at"] = prev.get("alerted_at")
 
-    # Send the daily report once per calendar day.
-    today = datetime.now(timezone.utc).date().isoformat()
+    # Send the daily report once per calendar day. It fires on the FIRST tick of
+    # a new UTC day, so the day it should describe is the one that just ended —
+    # reporting the day that is minutes old would show zeros every morning.
+    now = datetime.now(timezone.utc)
+    today = now.date().isoformat()
+    reported_day = report_day_for(now)
     if task_id is not None and prev.get("last_report_day") != today:
         try:
             from reporting import send_report
 
-            rep = send_report(task_id=task_id)
+            rep = send_report(task_id=task_id, day=reported_day)
             # Only mark the day done if a channel actually delivered, so a
             # transient Telegram failure doesn't skip the report all day.
             if rep.get("sent"):

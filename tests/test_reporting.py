@@ -50,7 +50,10 @@ def test_build_and_format(db):
     assert "hourly" in m["underperforming"] or m["underperforming"] == []  # 1 hourly sent < min_volume
 
     text = reporting.format_report_text(m, day="2026-06-05")
-    assert "Spent connects: 28" in text
+    # Seeded proposals carry no submitted_at, so they count toward the all-time
+    # total but not toward any single day.
+    assert "Spent connects: 0 (всего: 28)" in text
+    assert "Proposals sent: 0 (всего: 2)" in text
     assert "Hires: 1" in text
     assert "Revenue booked: $14,000" in text
     assert "Revenue / connect:" in text
@@ -83,3 +86,50 @@ def test_send_telegram_not_configured(monkeypatch):
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
     ok, msg = reporting.send_telegram("hi")
     assert ok is False and "not configured" in msg
+
+
+def test_report_counts_proposals_submitted_on_that_day(db):
+    """The daily line must reflect what was actually sent that day.
+
+    Regression: the report only ever showed all-time numbers, so a day with
+    real submissions could still print 0 and read as "nothing was sent".
+    """
+    from datetime import datetime, timezone
+
+    j = Job(title="a", description="d", status="SENT", budget="Fixed-price")
+    db.add(j)
+    db.commit()
+    db.add_all([
+        Proposal(job_id=j.id, status="SENT", content="x", connects_spent=12,
+                 submitted_at=datetime(2026, 8, 18, 9, 0, tzinfo=timezone.utc)),
+        Proposal(job_id=j.id, status="SENT", content="x", connects_spent=6,
+                 submitted_at=datetime(2026, 8, 18, 20, 30, tzinfo=timezone.utc)),
+        # Different day — must NOT be counted in the 18th's figures.
+        Proposal(job_id=j.id, status="SENT", content="x", connects_spent=99,
+                 submitted_at=datetime(2026, 8, 19, 1, 0, tzinfo=timezone.utc)),
+    ])
+    db.commit()
+
+    m = reporting.build_report(db, day="2026-08-18")
+    assert m["proposals_sent_today"] == 2
+    assert m["connects_spent_today"] == 18          # 12 + 6, not 117
+    assert m["proposals_sent"] == 3                 # all-time still counts every one
+
+    text = reporting.format_report_text(m, day="2026-08-18")
+    assert "Proposals sent: 2 (всего: 3)" in text
+    assert "Spent connects: 18 (всего: 117)" in text
+
+
+def test_worker_reports_the_day_that_just_ended():
+    """The report fires on the first tick of a new UTC day, so it must describe
+    the previous day — reporting the day that is minutes old showed zeros every
+    morning, which is what made the report look broken."""
+    from datetime import datetime, timezone
+
+    import worker
+
+    # 04:06 UTC on the 19th (when the real 'за 2026-08-19' report went out).
+    assert worker.report_day_for(datetime(2026, 8, 19, 4, 6, tzinfo=timezone.utc)) == "2026-08-18"
+    # Month and year boundaries must roll back correctly too.
+    assert worker.report_day_for(datetime(2026, 9, 1, 0, 5, tzinfo=timezone.utc)) == "2026-08-31"
+    assert worker.report_day_for(datetime(2027, 1, 1, 0, 1, tzinfo=timezone.utc)) == "2026-12-31"

@@ -5,15 +5,22 @@ Pure DB aggregation — unit-testable with an in-memory session.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 
 from database import get_db_session, Job, Proposal, ClientMessage, CaseStudy
 
 
-def compute_metrics(db, task_id: int | None = None) -> dict:
+def compute_metrics(db, task_id: int | None = None, day: str | None = None) -> dict:
     """Pipeline funnel for the dashboard.
 
     connects_spent / proposals_sent — from Proposal; interviews / hires / revenue
     — from Job.outcome; replies — clients with ≥1 inbound message.
+
+    ``day`` (ISO date, UTC) restricts the PROPOSAL side to what was submitted on
+    that day, for the daily report. Outcomes (interviews/hires/revenue) stay
+    all-time on purpose: a hire lands days or weeks after the proposal that won
+    it, so scoping those to one day would report zeros forever. Default None =
+    all-time, which is what the dashboard funnel wants.
     """
     jq = db.query(Job)
     if task_id is not None:
@@ -24,6 +31,10 @@ def compute_metrics(db, task_id: int | None = None) -> dict:
     pq = db.query(Proposal).filter(Proposal.status == "SENT")
     if task_id is not None:
         pq = pq.filter(Proposal.job_id.in_(job_ids))
+    if day is not None:
+        start = datetime.fromisoformat(day).replace(tzinfo=timezone.utc)
+        pq = pq.filter(Proposal.submitted_at >= start,
+                       Proposal.submitted_at < start + timedelta(days=1))
     sent = pq.all()
 
     replies = (

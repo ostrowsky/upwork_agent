@@ -139,3 +139,42 @@ def test_msg_import_throttled(status_file, monkeypatch):
     for _ in range(3):
         worker.tick()
     assert calls["n"] == 1
+
+
+NOW = 1_000_000.0
+
+
+def test_first_anomaly_alerts():
+    assert worker.should_alert({}, ["session_down"], now=NOW) is True
+
+
+def test_no_anomalies_never_alerts():
+    assert worker.should_alert({}, [], now=NOW) is False
+
+
+def test_same_anomaly_is_not_repeated_within_cooldown(monkeypatch):
+    """Regression: a flapping session sent the same session_down alert four
+    times in one hour, because 'changed since last tick' alone lets a set that
+    clears and returns re-alert immediately."""
+    monkeypatch.setenv("ALERT_REPEAT_COOLDOWN", "3600")
+    prev = {"alerted_anomalies": ["session_down"], "alerted_at": NOW - 600}
+    assert worker.should_alert(prev, ["session_down"], now=NOW) is False
+
+
+def test_same_anomaly_alerts_again_after_cooldown(monkeypatch):
+    monkeypatch.setenv("ALERT_REPEAT_COOLDOWN", "3600")
+    prev = {"alerted_anomalies": ["session_down"], "alerted_at": NOW - 3601}
+    assert worker.should_alert(prev, ["session_down"], now=NOW) is True
+
+
+def test_new_anomaly_alerts_immediately_even_inside_cooldown(monkeypatch):
+    """A genuinely new problem must not be swallowed by the cooldown."""
+    monkeypatch.setenv("ALERT_REPEAT_COOLDOWN", "3600")
+    prev = {"alerted_anomalies": ["session_down"], "alerted_at": NOW - 60}
+    assert worker.should_alert(prev, ["session_down", "submit_problem"], now=NOW) is True
+
+
+def test_cooldown_of_zero_disables_throttling(monkeypatch):
+    monkeypatch.setenv("ALERT_REPEAT_COOLDOWN", "0")
+    prev = {"alerted_anomalies": ["session_down"], "alerted_at": NOW}
+    assert worker.should_alert(prev, ["session_down"], now=NOW) is True

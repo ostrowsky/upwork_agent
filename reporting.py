@@ -45,8 +45,15 @@ def _worst(rows: list[dict], min_volume: int = 3):
     return None
 
 
-def build_report(db, task_id: int | None = None) -> dict:
+def build_report(db, task_id: int | None = None, day: str | None = None) -> dict:
     m = compute_metrics(db, task_id)
+    # The header says "отчёт за <day>", so the proposal side must be that day's
+    # numbers — reporting all-time totals under a daily heading read as "nothing
+    # was sent" whenever the lifetime figure happened to be 0. Totals are kept
+    # alongside so the day's numbers have context.
+    today = compute_metrics(db, task_id, day=day or utc_today())
+    m["proposals_sent_today"] = today["proposals_sent"]
+    m["connects_spent_today"] = today["connects_spent"]
     buckets = analytics_by_bucket(db, task_id)
     niches = analytics_by_niche(db, task_id)
     ranges = analytics_by_budget_range(db, task_id)
@@ -71,9 +78,18 @@ def format_report_text(m: dict, day: str | None = None) -> str:
     """Daily report in the ТЗ format (Spent connects / … / Best niche / Worst niche / Best budget range)."""
     day = day or utc_today()
     dash = "—"
+    sent_today = m.get("proposals_sent_today")
+    conn_today = m.get("connects_spent_today")
+    # Fall back to the all-time figures when build_report didn't supply the
+    # day-scoped ones (older saved reports, direct callers).
+    sent_line = (f"Proposals sent: {sent_today} (всего: {m['proposals_sent']})"
+                 if sent_today is not None else f"Proposals sent: {m['proposals_sent']}")
+    conn_line = (f"Spent connects: {conn_today} (всего: {m['connects_spent']})"
+                 if conn_today is not None else f"Spent connects: {m['connects_spent']}")
     lines = [
         f"📊 Upwork отчёт за {day}",
-        f"Spent connects: {m['connects_spent']}",
+        sent_line,
+        conn_line,
         f"Replies: {m['replies']}",
         f"Interviews: {m['interviews']}",
         f"Hires: {m['hires']}",
@@ -148,7 +164,7 @@ def send_report(task_id: int | None = None, db=None, day: str | None = None) -> 
     owns = db is None
     db = db or get_db_session()
     try:
-        metrics = build_report(db, task_id)
+        metrics = build_report(db, task_id, day=day)
         text = format_report_text(metrics, day)
         save_report(db, metrics, text, day=day, task_id=task_id)
         tg_ok, tg_msg = send_telegram(text)
