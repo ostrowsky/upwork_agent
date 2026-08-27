@@ -11,6 +11,7 @@ personal browser (a different --user-data-dir) is never touched.
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -112,8 +113,46 @@ def kill_all_on_stuck_enabled() -> bool:
     return os.getenv("BROWSER_KILL_ALL_ON_STUCK", "1").strip().lower() in ("1", "true", "yes")
 
 
+def clear_crash_flags(profile_dir: str | Path) -> int:
+    """Mark the profile as cleanly exited. Returns how many files were fixed.
+
+    Every heal path here force-kills the browser, which leaves
+    `profile.exit_type = "Crashed"` in the profile's Preferences. Edge then
+    opens its crash-recovery prompt on the NEXT launch, and that prompt blocks
+    the CDP handshake until Playwright times out — so a force-kill reliably
+    wedges the following run. Resetting the flag is what Chromium itself does
+    after a clean shutdown.
+    """
+    fixed = 0
+    root = Path(profile_dir)
+    # The profile may be the user-data root (…/Default/Preferences) or, for a
+    # real browser User Data dir, any of its profile subfolders.
+    for pref in list(root.glob("*/Preferences")) + [root / "Preferences"]:
+        if not pref.is_file():
+            continue
+        try:
+            data = json.loads(pref.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        prof = data.get("profile")
+        if not isinstance(prof, dict):
+            continue
+        if prof.get("exit_type") == "Normal" and prof.get("exited_cleanly") is True:
+            continue
+        prof["exit_type"] = "Normal"
+        prof["exited_cleanly"] = True
+        try:
+            pref.write_text(json.dumps(data), encoding="utf-8")
+            fixed += 1
+        except OSError:
+            continue
+    return fixed
+
+
 def cleanup_profile(profile_dir: str | Path) -> dict:
-    """Full self-heal: kill stray profile processes + remove stale lock files."""
+    """Full self-heal: kill stray profile processes, remove stale lock files,
+    and clear the crash flag our own force-kill just set."""
     killed = kill_profile_processes(profile_dir)
     removed = remove_stale_locks(profile_dir)
-    return {"killed": killed, "removed_locks": removed}
+    cleared = clear_crash_flags(profile_dir)
+    return {"killed": killed, "removed_locks": removed, "cleared_crash_flags": cleared}

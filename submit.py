@@ -16,6 +16,7 @@ import json
 import os
 import re
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -841,7 +842,15 @@ def _apply_on_page(page, url: str, job: Job, proposal: Proposal, db, dry_run: bo
                 "reason": "blocked by Cloudflare challenge (debug dumped)", "connects": None}
 
     authed, why = is_logged_in(page)
-    if not authed and "apply" not in page.url:
+    # Match the apply page on the URL PATH, not the whole URL: when the session
+    # is dead Upwork redirects to
+    #   /ab/account-security/login?redir=%2Fnx%2Fproposals%2Fjob%2F~id%2Fapply%2F
+    # which contains "apply" inside the redirect QUERY. Substring-matching the
+    # full URL therefore treated the login page as the apply form and carried on,
+    # reporting a cheerful dry-run with every field empty instead of saying the
+    # session was down.
+    on_apply_form = "/apply" in urlsplit(page.url).path
+    if not authed and not on_apply_form:
         return {"ok": False, "submitted": False, "dry_run": dry_run,
                 "reason": f"not authenticated: {why}", "connects": None}
 

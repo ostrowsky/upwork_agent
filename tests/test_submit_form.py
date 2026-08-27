@@ -652,3 +652,37 @@ def test_fill_profile_highlights_no_items_cancels_modal():
     page = FakePage(locs, body="", url=APPLY_URL)
     assert submit._fill_profile_highlights(page) is False
     assert locs[S.APPLY_HIGHLIGHT_CANCEL_BUTTON].actions == ["click"]
+
+
+LOGIN_REDIRECT_URL = (
+    "https://www.upwork.com/ab/account-security/login"
+    "?redir=%2Fnx%2Fproposals%2Fjob%2F~021aaaaaaaaaaaaaaa%2Fapply%2F"
+)
+
+
+def test_dead_session_reports_not_authenticated_not_an_empty_dry_run():
+    """Regression: the login redirect embeds the apply path in its ?redir=
+    query, so substring-matching "apply" against the whole URL treated the
+    login page as the apply form. The run then reported a successful dry-run
+    with every field empty, which read as "the parser is broken" rather than
+    "you are logged out"."""
+    job, proposal, db = _job(), _proposal(), FakeDB()
+    page = FakePage(_base_locators(), body="", url=LOGIN_REDIRECT_URL,
+                    title="Upwork Login - Log in to your Upwork account")
+
+    res = submit._apply_on_page(page, LOGIN_REDIRECT_URL, job, proposal, db, dry_run=True)
+
+    assert res["ok"] is False
+    assert "not authenticated" in res["reason"]
+    assert proposal.status == "DRAFT"  # nothing was recorded against a dead session
+
+
+def test_real_apply_url_is_still_accepted():
+    """The guard must keep trusting the genuine apply page."""
+    job, proposal, db = _job(), _proposal(), FakeDB()
+    page = FakePage(_base_locators(), body="Send for 16 Connects", url=APPLY_URL)
+
+    res = submit._apply_on_page(page, APPLY_URL, job, proposal, db, dry_run=True)
+
+    assert res["ok"] is True
+    assert res["connects"] == 16

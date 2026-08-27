@@ -92,3 +92,55 @@ def test_open_context_reraises_first_error_if_retry_fails(monkeypatch, tmp_path,
         assert False, "should have raised"
     except RuntimeError as e:
         assert "original launch error" in str(e)
+
+
+def test_clear_crash_flags_resets_a_force_killed_profile(tmp_path):
+    """Regression: every heal path force-kills the browser, which leaves
+    exit_type="Crashed". Edge then shows its recovery prompt on the next start,
+    that prompt blocks the CDP handshake, and the retry times out too — so the
+    heal itself wedged the following launch."""
+    import json
+
+    prof = tmp_path / "Default"
+    prof.mkdir()
+    (prof / "Preferences").write_text(
+        json.dumps({"profile": {"exit_type": "Crashed", "name": "keep me"}}),
+        encoding="utf-8")
+
+    assert browser_cleanup.clear_crash_flags(tmp_path) == 1
+
+    d = json.loads((prof / "Preferences").read_text(encoding="utf-8"))
+    assert d["profile"]["exit_type"] == "Normal"
+    assert d["profile"]["exited_cleanly"] is True
+    assert d["profile"]["name"] == "keep me"  # unrelated settings preserved
+
+
+def test_clear_crash_flags_is_idempotent(tmp_path):
+    import json
+
+    prof = tmp_path / "Default"
+    prof.mkdir()
+    (prof / "Preferences").write_text(
+        json.dumps({"profile": {"exit_type": "Normal", "exited_cleanly": True}}),
+        encoding="utf-8")
+    assert browser_cleanup.clear_crash_flags(tmp_path) == 0
+
+
+def test_clear_crash_flags_survives_missing_or_corrupt_files(tmp_path):
+    # No profile at all.
+    assert browser_cleanup.clear_crash_flags(tmp_path) == 0
+    prof = tmp_path / "Default"
+    prof.mkdir()
+    (prof / "Preferences").write_text("not json", encoding="utf-8")
+    assert browser_cleanup.clear_crash_flags(tmp_path) == 0
+
+
+def test_cleanup_profile_reports_cleared_flags(tmp_path):
+    import json
+
+    prof = tmp_path / "Default"
+    prof.mkdir()
+    (prof / "Preferences").write_text(
+        json.dumps({"profile": {"exit_type": "Crashed"}}), encoding="utf-8")
+    res = browser_cleanup.cleanup_profile(tmp_path)
+    assert res["cleared_crash_flags"] == 1

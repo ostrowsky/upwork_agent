@@ -71,11 +71,16 @@ def _open_context_with_heal(p, profile_dir, headless):
         # Step 2: nuclear — Edge background mode respawns a profile holder that a
         # scoped kill can't outrun; kill ALL Edge (matches the operator workflow).
         try:
-            from browser_cleanup import kill_all_browsers, kill_all_on_stuck_enabled
+            from browser_cleanup import (
+                clear_crash_flags, kill_all_browsers, kill_all_on_stuck_enabled,
+            )
 
             if kill_all_on_stuck_enabled():
                 kill_all_browsers()
                 time.sleep(2.5)
+                # The kill above marks the profile "Crashed"; left set, Edge opens
+                # its recovery prompt on start and this retry times out too.
+                clear_crash_flags(profile_dir)
                 return open_context(p, profile_dir, headless=headless)
         except Exception:  # noqa: BLE001
             pass
