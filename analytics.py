@@ -44,9 +44,28 @@ def compute_metrics(db, task_id: int | None = None, day: str | None = None) -> d
         .count()
     )
 
+    # Which jobs those proposals went to — a bare count doesn't tell the operator
+    # what the agent actually applied to that day.
+    by_id = {j.id: j for j in jobs}
+    sent_jobs = []
+    for p in sorted(sent, key=lambda x: (x.submitted_at or datetime.min.replace(tzinfo=timezone.utc))):
+        j = by_id.get(p.job_id)
+        if j is not None:
+            sent_jobs.append({"job_id": j.id, "title": j.title or "—",
+                              "connects": int(p.connects_spent or p.connects_cost or 0),
+                              "url": j.source_url})
+
+    # connects_spent is what the apply form reported at send time, but Upwork
+    # sometimes serves a Send button with no amount on it, leaving it NULL — the
+    # cost read from the form earlier (connects_cost) is the same figure, so fall
+    # back to it rather than reporting a day of real submissions as 0 connects.
+    def _cost(p) -> int:
+        return int(p.connects_spent or p.connects_cost or 0)
+
     return {
         "proposals_sent": len(sent),
-        "connects_spent": sum((p.connects_spent or 0) for p in sent),
+        "connects_spent": sum(_cost(p) for p in sent),
+        "sent_jobs": sent_jobs,
         "replies": replies,
         "interviews": sum(1 for j in jobs if j.outcome == "INTERVIEW"),
         "hires": sum(1 for j in jobs if j.outcome == "WIN"),

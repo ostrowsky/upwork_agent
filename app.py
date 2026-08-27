@@ -1,3 +1,5 @@
+import os
+
 import streamlit as st
 import pandas as pd
 
@@ -175,6 +177,17 @@ def get_jobs():
     db = get_db_session()
     try:
         return db.query(Job).order_by(Job.created_at.desc()).all()
+    finally:
+        db.close()
+
+
+def submitted_today_count() -> int:
+    """Real submissions made today — shown next to the daily cap."""
+    from submit import submissions_today
+
+    db = get_db_session()
+    try:
+        return submissions_today(db)
     finally:
         db.close()
 
@@ -987,7 +1000,7 @@ def render_jobs():
         st.caption("Нет активной задачи — кнопка «Квалифицировать NEW» недоступна; «Все задачи» работает.")
 
     # Batch auto-submit drafted proposals (opens browser; honors SUBMIT_PER_RUN).
-    from submit import auto_submit_enabled, submit_per_run
+    from submit import auto_submit_enabled, submit_per_run, daily_submit_limit
 
     live = auto_submit_enabled()
     mode = "🔴 LIVE (реальная отправка, тратит connects)" if live else "🟡 DRY-RUN (без отправки)"
@@ -995,6 +1008,26 @@ def render_jobs():
         f"Автосабмит: режим {mode}. Свежие вакансии — первыми, один сеанс Edge на весь "
         f"батч (вложение PDF+инфографика). Не запускай вместе с worker."
     )
+
+    # Daily cap, editable here so a batch run can be widened without touching .env.
+    # Written back into the environment because submit.py reads it from there.
+    lc1, lc2, lc3 = st.columns([1, 1, 2])
+    with lc1:
+        _no_cap = st.checkbox("Без дневного лимита", value=daily_submit_limit() <= 0,
+                              key="no_daily_cap",
+                              help="Снимает потолок отправок за сутки. Autosubmit пройдёт по ВСЕМ готовым вакансиям.")
+    with lc2:
+        _cap_val = st.number_input("Лимит в сутки", min_value=1, max_value=200,
+                                   value=max(1, daily_submit_limit() or 10),
+                                   disabled=_no_cap, key="daily_cap_value")
+    os.environ["DAILY_SUBMIT_LIMIT"] = "0" if _no_cap else str(int(_cap_val))
+    with lc3:
+        _used = submitted_today_count()
+        st.write("")
+        if _no_cap:
+            st.warning(f"Лимит снят · сегодня отправлено: {_used}")
+        else:
+            st.info(f"Сегодня отправлено {_used} из {int(_cap_val)} · осталось {max(0, int(_cap_val) - _used)}")
     sc1, sc2 = st.columns([1, 2])
     with sc1:
         n_submit = st.number_input("Сколько отправить", min_value=1, max_value=10,
@@ -1012,6 +1045,52 @@ def render_jobs():
         bar.empty()
         st.session_state["batchsubmitres"] = res if ok else {"submitted": 0, "errors": 0, "total": 0, "reason": "браузер занят"}
         st.rerun()
+
+    # One-click full cycle over every ready job: generate the case + proposal for
+    # each READY_TO_PROPOSE, then submit the drafts. Respects the daily cap set
+    # above; with the cap off it goes through all of them.
+    st.divider()
+    _cap_now = daily_submit_limit()
+    _ready_n = sum(1 for j in get_jobs()
+                   if j.status in ("READY_TO_PROPOSE", "PROPOSAL_DRAFTED")
+                   and (active is None or j.task_id == active.id))
+    st.caption(
+        f"**Autosubmit** — по всем готовым вакансиям ({_ready_n}): сгенерировать кейс и отклик, "
+        + ("затем отправить ВСЕ (дневной лимит снят)." if _cap_now <= 0
+           else f"затем отправить в пределах дневного лимита ({_cap_now}).")
+    )
+    if st.button("🤖 Autosubmit", disabled=active is None or _ready_n == 0, key="autosubmit"):
+        from proposals import generate_drafts_for_ready
+        from submit import submit_ready
+
+        bar, cb = make_progress("Autosubmit")
+        with st.spinner(f"Генерирую кейсы и отклики для {_ready_n} вакансий…"):
+            drafted = generate_drafts_for_ready(active.id, limit=_ready_n)
+        with st.spinner("Открываю Upwork и отправляю…"):
+            # limit=-1 → no per-run slice; the daily cap is what bounds a live run.
+            ok, sent = run_browser_op(
+                lambda: submit_ready(active.id, limit=-1, progress=cb))
+        bar.empty()
+        st.session_state["autosubmitres"] = {
+            "drafted": drafted,
+            "sent": sent if ok else {"submitted": 0, "errors": 0, "total": 0,
+                                     "last_reason": "браузер занят (worker/др. операция)"},
+        }
+        st.rerun()
+
+    _asr = st.session_state.get("autosubmitres")
+    if _asr:
+        _d, _s = _asr["drafted"], _asr["sent"]
+        st.info(f"Черновики: создано {_d.get('drafted', 0)} · ошибок {_d.get('errors', 0)} "
+                f"(из {_d.get('total', 0)})")
+        if _s.get("submitted"):
+            st.success(f"Отправлено: {_s['submitted']} из {_s.get('total', 0)} "
+                       f"· ошибок {_s.get('errors', 0)}"
+                       + (f" · упёрлось в лимит: {_s['skipped_cap']}" if _s.get("skipped_cap") else ""))
+        elif _s.get("dry_run"):
+            st.info(f"Dry-run: подготовлено {_s['dry_run']} (AUTO_SUBMIT=0, реально не отправлено)")
+        else:
+            st.warning(f"Ничего не отправлено · {(_s.get('last_reason') or '')[:120]}")
 
     _bsr = st.session_state.get("batchsubmitres")
     if _bsr:

@@ -147,3 +147,40 @@ def test_batch_drafts_ready_jobs(db):
     res = proposals.generate_drafts_for_ready(task.id, db=db, llm=lambda m: _FULL_JSON)
     assert res["drafted"] == 1
     assert res["errors"] == 0
+
+
+def test_cases_block_carries_the_narrative():
+    """The letter can only argue transferable experience if the write-up
+    reaches the prompt, not just the case title."""
+    import types
+
+    case = types.SimpleNamespace(
+        id=7, title="Co-op slice", niche="Unity", stack="Photon",
+        budget_range="$10k", result="Publisher signed",
+        narrative="We chose client-side prediction over lockstep because one slow peer stalls everyone.",
+    )
+    block = proposals._cases_block([case])
+    assert "Co-op slice" in block
+    assert "подробнее:" in block
+    assert "client-side prediction" in block
+
+
+def test_cases_block_without_narrative_is_unchanged():
+    import types
+
+    case = types.SimpleNamespace(
+        id=7, title="Co-op slice", niche="Unity", stack="Photon",
+        budget_range="$10k", result="Publisher signed", narrative=None)
+    block = proposals._cases_block([case])
+    assert "подробнее:" not in block
+
+
+def test_cases_block_truncates_a_long_narrative():
+    """A long case must not crowd the job description out of the prompt."""
+    import types
+
+    case = types.SimpleNamespace(
+        id=7, title="T", niche=None, stack=None, budget_range=None, result=None,
+        narrative="x" * 5000)
+    block = proposals._cases_block([case])
+    assert len(block) < 1200

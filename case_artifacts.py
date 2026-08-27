@@ -6,6 +6,7 @@ Layout data is a plain dict so rendering stays unit-testable without an LLM.
 """
 from __future__ import annotations
 
+import re
 import unicodedata
 from pathlib import Path
 
@@ -74,6 +75,8 @@ def _layout_from_case(case) -> dict:
         "role": clean_text(get("role") or ""),
         "stack": clean_text(get("stack") or ""),
         "summary": clean_text(get("description") or ""),
+        # Long-form write-up; the PDF is where the client actually reads it.
+        "narrative": clean_text(get("narrative") or ""),
         "approach": [clean_text(x) for x in (get("approach_list") or []) if x],
         "results": results,
         "metrics": metrics[:4],
@@ -132,6 +135,12 @@ def render_case_pdf(case, out_path: str | Path | None = None) -> str:
     if d["results"]:
         story += [Paragraph("Results", h2),
                   ListFlowable([ListItem(Paragraph(x, body)) for x in d["results"] if x], bulletType="bullet")]
+    if d.get("narrative"):
+        # Prose write-up last: the KPI band and bullets are the skim layer, this
+        # is for a client who wants the reasoning behind them.
+        story += [Paragraph("How we solved a similar problem", h2)]
+        story += [Paragraph(p.strip(), body)
+                  for p in re.split(r"\n\s*\n", d["narrative"]) if p.strip()]
 
     doc = SimpleDocTemplate(str(out_path), pagesize=A4,
                             topMargin=18 * mm, bottomMargin=16 * mm, leftMargin=18 * mm, rightMargin=18 * mm)

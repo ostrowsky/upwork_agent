@@ -139,3 +139,62 @@ def test_submit_many_opens_one_browser_for_batch(db, monkeypatch):
     r = submit.submit_many(items, db, dry_run=True)
     assert opens["n"] == 1   # ONE browser session for the whole batch (was N before)
     assert r["total"] == 3 and r["dry_run"] == 3
+
+
+def test_daily_limit_zero_means_unlimited(monkeypatch):
+    """The UI can switch the cap off so a batch run covers every ready job."""
+    monkeypatch.setenv("DAILY_SUBMIT_LIMIT", "0")
+    assert submit.daily_submit_limit() == 0
+
+
+def test_daily_limit_reads_configured_value(monkeypatch):
+    monkeypatch.setenv("DAILY_SUBMIT_LIMIT", "7")
+    assert submit.daily_submit_limit() == 7
+
+
+def test_daily_limit_falls_back_on_garbage(monkeypatch):
+    """A typo must not read as 'unlimited' and drain the connects balance."""
+    monkeypatch.setenv("DAILY_SUBMIT_LIMIT", "три")
+    assert submit.daily_submit_limit() == 10
+
+
+def _stub_batch(db, monkeypatch, n=3):
+    """n drafted jobs + a browser/apply stub that reports every send as real."""
+    import contextlib
+
+    import browser
+
+    for i in range(1, n + 1):
+        db.add(Job(id=i, title=f"j{i}", description="d", status="PROPOSAL_DRAFTED",
+                   upwork_job_id=f"021{i:015d}", task_id=1))
+        db.add(Proposal(job_id=i, status="DRAFT", content="hello"))
+    db.commit()
+
+    @contextlib.contextmanager
+    def fake_browser_page():
+        yield object()
+
+    monkeypatch.setattr(browser, "browser_page", fake_browser_page)
+    monkeypatch.setattr(submit, "_apply_on_page",
+                        lambda *a, **k: {"ok": True, "submitted": True, "dry_run": False,
+                                         "reason": "sent", "connects": 4})
+    return [(db.query(Job).filter(Job.id == i).first(),
+             db.query(Proposal).filter(Proposal.job_id == i).first())
+            for i in range(1, n + 1)]
+
+
+def test_cap_stops_the_batch_partway(db, monkeypatch):
+    monkeypatch.setenv("AUTO_SUBMIT", "1")
+    items = _stub_batch(db, monkeypatch, n=3)
+    r = submit.submit_many(items, db, dry_run=False, cap=2, already=0)
+    assert r["submitted"] == 2
+    assert r["skipped_cap"] == 1
+
+
+def test_cap_of_zero_sends_every_ready_job(db, monkeypatch):
+    """Autosubmit with the limit switched off must not stop at an implicit cap."""
+    monkeypatch.setenv("AUTO_SUBMIT", "1")
+    items = _stub_batch(db, monkeypatch, n=3)
+    r = submit.submit_many(items, db, dry_run=False, cap=0, already=99)
+    assert r["submitted"] == 3
+    assert r["skipped_cap"] == 0

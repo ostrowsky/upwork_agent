@@ -66,15 +66,25 @@ def rank_cases(job, cases, top_n: int = 2, min_score: int = 1) -> list:
 
 CASE_GEN_SYSTEM = (
     "Ты — сильный pre-sales инженер геймдев-студии. По описанию вакансии на Upwork "
-    "придумай МАКСИМАЛЬНО релевантный кейс из «портфолио» студии, который убедит "
-    "заказчика выбрать нас. Кейс правдоподобный, конкретный, с измеримыми результатами. "
+    "придумай кейс из «портфолио» студии, который убедит заказчика выбрать нас. "
+    "Кейс правдоподобный, конкретный, с измеримыми результатами.\n"
+    "ВАЖНО — кейс НЕ должен быть копией вакансии: возьми ТУ ЖЕ предметную область "
+    "и ПОХОЖУЮ инженерную задачу, но ДРУГОЕ решение и другой продукт. Заказчик должен "
+    "увидеть, что мы уже решали задачу такого класса, а не что мы пересказали его ТЗ.\n"
     "Верни СТРОГО один JSON-объект без markdown:\n"
     '{"title": str, "niche": str, "stack": str, "budget_range": str, "duration": str, '
-    '"role": str, "summary": str, "approach": [str, ...], "results": [str, ...], '
-    '"metrics": [{"label": str, "value": str}, ...]}\n'
+    '"role": str, "summary": str, "narrative": str, "approach": [str, ...], '
+    '"results": [str, ...], "metrics": [{"label": str, "value": str}, ...]}\n'
     "title — короткое название проекта. stack — список технологий через запятую. "
     "budget_range — диапазон в $. metrics — 3-4 коротких KPI (value <=14 симв.). "
-    "approach — 2-4 пункта. results — 2-4 измеримых результата. Пиши на языке вакансии (EN/RU)."
+    "approach — 2-4 пункта. results — 2-4 измеримых результата.\n"
+    "summary — 1-2 предложения для списков.\n"
+    "narrative — 3-4 абзаца связного текста (600-1200 символов): контекст и бизнес-задача "
+    "клиента, в чём была техническая сложность, какое решение выбрали и ПОЧЕМУ именно его "
+    "(с альтернативами, которые отвергли), что получилось в цифрах. Без маркированных "
+    "списков и заголовков — обычная проза. Явно видно, что задача СМЕЖНАЯ с вакансией, "
+    "а не та же самая.\n"
+    "Пиши на языке вакансии (EN/RU)."
 )
 
 
@@ -166,6 +176,7 @@ def generate_case_for_job(job, task, db, llm=None, render: bool = True) -> dict:
         niche=_as_text(data.get("niche"), 255),
         stack=_as_text(data.get("stack")),
         description=_as_text(data.get("summary")) or _as_text(data.get("title")) or "",
+        narrative=_as_text(data.get("narrative")),
         result="\n".join(results) or None,
         budget_range=_as_text(data.get("budget_range"), 100),
         synthetic=1,

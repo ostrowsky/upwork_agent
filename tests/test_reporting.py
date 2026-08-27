@@ -133,3 +133,115 @@ def test_worker_reports_the_day_that_just_ended():
     # Month and year boundaries must roll back correctly too.
     assert worker.report_day_for(datetime(2026, 9, 1, 0, 5, tzinfo=timezone.utc)) == "2026-08-31"
     assert worker.report_day_for(datetime(2027, 1, 1, 0, 1, tzinfo=timezone.utc)) == "2026-12-31"
+
+
+def test_alert_is_labelled_with_the_instance(monkeypatch):
+    """Several machines share one Telegram chat; an unlabelled alert gives no
+    way to tell which installation is unhealthy."""
+    monkeypatch.setenv("AGENT_INSTANCE_NAME", "HOME-PC")
+    sent = {}
+
+    def fake_telegram(text):
+        sent["tg"] = text
+        return True, "telegram 200"
+
+    monkeypatch.setattr(reporting, "send_telegram", fake_telegram)
+    monkeypatch.setattr(reporting, "send_discord", lambda t: (False, "discord not configured"))
+
+    reporting.send_alert("worker anomalies: session_down")
+
+    assert sent["tg"].startswith("🚨 [HOME-PC] ")
+    assert "session_down" in sent["tg"]
+
+
+def test_instance_name_prefers_explicit_override(monkeypatch):
+    monkeypatch.setenv("AGENT_INSTANCE_NAME", "client-vm")
+    assert reporting.instance_name() == "client-vm"
+
+
+def test_instance_name_falls_back_to_hostname(monkeypatch):
+    import socket
+
+    monkeypatch.delenv("AGENT_INSTANCE_NAME", raising=False)
+    assert reporting.instance_name() == socket.gethostname()
+
+
+def test_report_header_names_the_instance(monkeypatch):
+    monkeypatch.setenv("AGENT_INSTANCE_NAME", "HOME-PC")
+    m = {"proposals_sent": 0, "connects_spent": 0, "replies": 0, "interviews": 0,
+         "hires": 0, "revenue": 0, "revenue_per_connect": 0.0}
+    text = reporting.format_report_text(m, day="2026-08-27")
+    assert text.splitlines()[0] == "📊 Upwork отчёт за 2026-08-27 · HOME-PC"
+
+
+def test_report_lists_the_jobs_that_were_applied_to(db):
+    """A bare count doesn't tell the operator what the agent applied to."""
+    from datetime import datetime, timezone
+
+    j1 = Job(title="Unity VR developer", description="d", status="SENT", budget="Hourly")
+    j2 = Job(title="Rebuild mobile battle royal", description="d", status="SENT", budget="Hourly")
+    db.add_all([j1, j2])
+    db.commit()
+    db.add_all([
+        Proposal(job_id=j1.id, status="SENT", content="x", connects_spent=27,
+                 submitted_at=datetime(2026, 7, 18, 13, 0, tzinfo=timezone.utc)),
+        Proposal(job_id=j2.id, status="SENT", content="x", connects_spent=11,
+                 submitted_at=datetime(2026, 7, 18, 14, 0, tzinfo=timezone.utc)),
+    ])
+    db.commit()
+
+    m = reporting.build_report(db, day="2026-07-18")
+    text = reporting.format_report_text(m, day="2026-07-18")
+
+    assert "Отклики отправлены (2):" in text
+    assert "Unity VR developer" in text
+    assert "27 cn" in text
+    assert "Rebuild mobile battle royal" in text
+
+
+def test_connects_fall_back_to_the_cost_read_from_the_form(db):
+    """Upwork sometimes serves a Send button with no amount, leaving
+    connects_spent NULL — a day of real submissions must not report 0 connects."""
+    from datetime import datetime, timezone
+
+    j = Job(title="a", description="d", status="SENT", budget="Hourly")
+    db.add(j)
+    db.commit()
+    db.add(Proposal(job_id=j.id, status="SENT", content="x",
+                    connects_spent=None, connects_cost=16,
+                    submitted_at=datetime(2026, 7, 18, 13, 0, tzinfo=timezone.utc)))
+    db.commit()
+
+    m = reporting.build_report(db, day="2026-07-18")
+    assert m["connects_spent_today"] == 16
+
+
+def test_balance_line_shows_how_stale_the_figure_is(monkeypatch):
+    """The stored balance only updates when the agent visits Upwork; unlabelled
+    it silently reads as current."""
+    from datetime import datetime, timedelta, timezone
+
+    old = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
+    monkeypatch.setattr("connects.read_balance", lambda: {"balance": 144, "updated_at": old})
+    m = {"proposals_sent": 0, "connects_spent": 0, "replies": 0, "interviews": 0,
+         "hires": 0, "revenue": 0, "revenue_per_connect": 0.0}
+    text = reporting.format_report_text(m, day="2026-08-27")
+    assert "Connects balance: 144" in text
+    assert "3 дн назад" in text
+
+
+def test_fresh_balance_is_marked_current(monkeypatch):
+    from datetime import datetime, timezone
+
+    monkeypatch.setattr("connects.read_balance",
+                        lambda: {"balance": 78, "updated_at": datetime.now(timezone.utc).isoformat()})
+    m = {"proposals_sent": 0, "connects_spent": 0, "replies": 0, "interviews": 0,
+         "hires": 0, "revenue": 0, "revenue_per_connect": 0.0}
+    assert "Connects balance: 78 (актуален)" in reporting.format_report_text(m, day="2026-08-27")
+
+
+def test_balance_without_timestamp_is_not_labelled(monkeypatch):
+    monkeypatch.setattr("connects.read_balance", lambda: {"balance": 10})
+    m = {"proposals_sent": 0, "connects_spent": 0, "replies": 0, "interviews": 0,
+         "hires": 0, "revenue": 0, "revenue_per_connect": 0.0}
+    assert "Connects balance: 10\n" in reporting.format_report_text(m, day="2026-08-27") + "\n"

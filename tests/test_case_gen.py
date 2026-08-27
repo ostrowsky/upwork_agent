@@ -145,3 +145,69 @@ def test_clean_text_accepts_a_list():
     assert case_artifacts.clean_text(["Unity", "Photon"]) == "Unity, Photon"
     assert case_artifacts.clean_text(None) == ""
     assert case_artifacts.clean_text(42) == "42"
+
+
+def _case_payload(**over):
+    d = {
+        "title": "Co-op survival prototype",
+        "niche": "Unity multiplayer",
+        "stack": "Unity, Photon Fusion",
+        "budget_range": "$8,000-$15,000",
+        "summary": "Shipped a 4-player co-op vertical slice in ten weeks with rollback netcode.",
+        "narrative": ("The studio needed a playable co-op slice for a publisher pitch. "
+                      "The hard part was hiding 120ms of transatlantic latency. "
+                      "We chose client-side prediction with server reconciliation over "
+                      "lockstep, which would have stalled on a single slow peer. "
+                      "The slice held 60fps for four players and won the pitch."),
+        "approach": ["Prototype", "Netcode", "Polish"],
+        "results": ["Publisher signed", "60fps with 4 players"],
+        "metrics": [{"label": "FPS", "value": "60"}],
+    }
+    d.update(over)
+    return d
+
+
+def test_generated_case_stores_the_narrative(db):
+    """The write-up is what lets a proposal explain HOW a similar problem was
+    solved, instead of only naming the project."""
+    job = Job(title="Unity co-op game", description="Need multiplayer", status="READY_TO_PROPOSE")
+    db.add(job)
+    db.commit()
+
+    res = cases.generate_case_for_job(job, None, db,
+                                      llm=lambda m: json.dumps(_case_payload()), render=False)
+    assert res["ok"], res.get("reason")
+    c = db.query(CaseStudy).filter(CaseStudy.id == res["case_id"]).first()
+    assert "client-side prediction" in c.narrative
+    # description stays the short summary used for ranking and list views.
+    assert c.description != c.narrative
+
+
+def test_case_without_narrative_still_generates(db):
+    """A model that omits the field must not break generation outright."""
+    job = Job(title="Unity co-op game", description="Need multiplayer", status="READY_TO_PROPOSE")
+    db.add(job)
+    db.commit()
+
+    payload = _case_payload()
+    payload.pop("narrative")
+    res = cases.generate_case_for_job(job, None, db,
+                                      llm=lambda m: json.dumps(payload), render=False)
+    assert res["ok"], res.get("reason")
+    c = db.query(CaseStudy).filter(CaseStudy.id == res["case_id"]).first()
+    assert c.narrative is None
+
+
+def test_case_prompt_demands_a_different_solution():
+    """Guard the instruction that stops the case being a restatement of the job."""
+    msgs = cases.build_case_gen_messages(
+        type("J", (), {"title": "t", "description": "d", "budget": None})(), None)
+    system = msgs[0]["content"]
+    assert "narrative" in system
+    assert "ДРУГОЕ решение" in system
+
+
+def test_layout_renders_narrative_paragraphs():
+    d = case_artifacts._layout_from_case(
+        {"title": "T", "description": "s", "narrative": "Para one.\n\nPara two."})
+    assert d["narrative"] == "Para one.\n\nPara two."

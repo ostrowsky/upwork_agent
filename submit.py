@@ -33,7 +33,16 @@ def auto_submit_enabled() -> bool:
 
 
 def daily_submit_limit() -> int:
-    return int(os.getenv("DAILY_SUBMIT_LIMIT", "10"))
+    """Max real submits per calendar day. 0 (or negative) disables the cap.
+
+    The UI exposes this so a batch run can be told to go through every ready
+    job; a malformed value falls back to the default rather than crashing the
+    submit path or, worse, being read as "unlimited".
+    """
+    try:
+        return int(os.getenv("DAILY_SUBMIT_LIMIT", "10"))
+    except (TypeError, ValueError):
+        return 10
 
 
 def keep_browser_open() -> bool:
@@ -1046,7 +1055,8 @@ def submit_many(items, db, dry_run: bool | None = None, progress=None,
             with browser_page() as page:
                 try:
                     for i, (job, proposal) in enumerate(ready, 1):
-                        if not dry_run and already + submitted_live >= cap:
+                        # cap <= 0 means the operator turned the daily cap off.
+                        if not dry_run and cap > 0 and already + submitted_live >= cap:
                             results.append({"job_id": job.id, "ok": False, "submitted": False,
                                             "dry_run": dry_run, "reason": "daily submit cap reached",
                                             "connects": None, "skipped_cap": True})

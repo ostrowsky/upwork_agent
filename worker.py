@@ -70,6 +70,11 @@ def _now_ts() -> float:
     return time.time()
 
 
+def _utc_today() -> str:
+    """Today's UTC date — the daily report's once-per-day key."""
+    return datetime.now(timezone.utc).date().isoformat()
+
+
 def should_alert(prev: dict, anomalies: list[str], now: float | None = None) -> bool:
     """Whether this tick's anomalies warrant pushing an alert.
 
@@ -312,6 +317,21 @@ def tick() -> dict:
         log.info("outcomes | win=%s declined=%s closed=%s reason=%s",
                  outcomes.get("win"), outcomes.get("lost_declined"),
                  outcomes.get("lost_closed"), outcomes.get("reason"))
+
+    # Refresh the connects balance on the tick that will send the daily report.
+    # It is only written when the agent visits Upwork, so a report built from the
+    # stored file alone can quote a figure that is days old. Must happen HERE,
+    # inside the browser phase — the report block below runs after the lock is
+    # released, and opening a browser there would race the UI.
+    report_due = task_id is not None and prev.get("last_report_day") != _utc_today()
+    if have_lock and probe.get("ok") and report_due:
+        try:
+            from connects import fetch_balance_live
+
+            bal = fetch_balance_live()
+            log.info("balance | ok=%s value=%s", bal.get("ok"), bal.get("balance"))
+        except Exception as e:  # noqa: BLE001 — a stale balance must not skip the report
+            log.warning("balance refresh failed: %s", e)
 
     # Browser phase done — release the lock so the UI can use the profile.
     if have_lock:

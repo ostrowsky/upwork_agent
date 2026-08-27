@@ -38,6 +38,12 @@ def _cases_block(cases: list) -> str:
             f"- [{c.id}] {c.title} | ниша: {c.niche or '-'} | стек: {c.stack or '-'} | "
             f"бюджет: {c.budget_range or '-'} | результат: {c.result or '-'}"
         )
+        # The write-up is what lets the letter say HOW we solved a comparable
+        # problem instead of just naming the project. Trimmed so a long case
+        # can't crowd the job description out of the prompt.
+        narrative = (getattr(c, "narrative", None) or "").strip()
+        if narrative:
+            lines.append(f"  подробнее: {narrative[:900]}")
     return "\n".join(lines)
 
 
@@ -54,7 +60,9 @@ def build_proposal_messages(task: Task | None, job: Job, cases: list, language: 
         '"questions": [str, ...], "risk_reducer": str, "cta": str, "estimate": str}\n'
         "Блоки: understanding — докажи, что прочитал задачу (1-2 предложения, "
         "конкретика из описания). proof — 1-2 кейса ТОЛЬКО из переданного списка, "
-        "со ссылкой и результатом; не выдумывай проекты. approach — как начнём "
+        "со ссылкой и результатом; не выдумывай проекты. Если у кейса есть блок "
+        "«подробнее», опирайся на него: покажи, КАК решали смежную задачу и почему "
+        "этот опыт переносится сюда, а не просто назови проект. approach — как начнём "
         "(шаги/этапы). questions — 2-4 уточняющих вопроса. risk_reducer — как "
         "снижаем риск (этапы/гарантии/демо). cta — чёткий следующий шаг в Upwork. "
         "estimate — детализированная смета по этапам с диапазонами, если уместно."

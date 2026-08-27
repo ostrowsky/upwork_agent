@@ -54,6 +54,7 @@ def build_report(db, task_id: int | None = None, day: str | None = None) -> dict
     today = compute_metrics(db, task_id, day=day or utc_today())
     m["proposals_sent_today"] = today["proposals_sent"]
     m["connects_spent_today"] = today["connects_spent"]
+    m["sent_jobs_today"] = today.get("sent_jobs") or []
     buckets = analytics_by_bucket(db, task_id)
     niches = analytics_by_niche(db, task_id)
     ranges = analytics_by_budget_range(db, task_id)
@@ -87,7 +88,7 @@ def format_report_text(m: dict, day: str | None = None) -> str:
     conn_line = (f"Spent connects: {conn_today} (всего: {m['connects_spent']})"
                  if conn_today is not None else f"Spent connects: {m['connects_spent']}")
     lines = [
-        f"📊 Upwork отчёт за {day}",
+        f"📊 Upwork отчёт за {day} · {instance_name()}",
         sent_line,
         conn_line,
         f"Replies: {m['replies']}",
@@ -99,15 +100,51 @@ def format_report_text(m: dict, day: str | None = None) -> str:
         f"Worst niche: {m.get('worst_niche') or dash}",
         f"Best budget range: {m.get('best_budget_range') or dash}",
     ]
+    # Which jobs the day's proposals went to — the counts above say how many,
+    # this says to what.
+    _sent_jobs = m.get("sent_jobs_today") or []
+    if _sent_jobs:
+        lines.append(f"\nОтклики отправлены ({len(_sent_jobs)}):")
+        for j in _sent_jobs:
+            lines.append(f"  • #{j['job_id']} {str(j['title'])[:70]}"
+                         + (f" — {j['connects']} cn" if j.get("connects") else ""))
+
     try:
         from connects import read_balance
 
         bal = read_balance()
         if bal:
-            lines.append(f"Connects balance: {bal['balance']}")
+            # Stamp the age: the stored figure is only refreshed when the agent
+            # visits Upwork, so an unlabelled number silently goes stale and
+            # reads as current.
+            age = _balance_age_hours(bal.get("updated_at"))
+            stamp = "" if age is None else (
+                " (актуален)" if age < 2 else f" (данные {_humanize_hours(age)} назад)"
+            )
+            lines.append(f"Connects balance: {bal['balance']}{stamp}")
     except Exception:  # noqa: BLE001
         pass
     return "\n".join(lines)
+
+
+def _balance_age_hours(updated_at: str | None) -> float | None:
+    if not updated_at:
+        return None
+    try:
+        ts = datetime.fromisoformat(updated_at)
+    except (TypeError, ValueError):
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - ts).total_seconds() / 3600)
+
+
+def _humanize_hours(h: float) -> str:
+    if h < 1:
+        return f"{int(h * 60)} мин"
+    if h < 48:
+        return f"{int(h)} ч"
+    return f"{int(h // 24)} дн"
 
 
 def save_report(db, metrics: dict, text: str, day: str | None = None, task_id: int | None = None) -> DailyReport:
@@ -178,10 +215,30 @@ def send_report(task_id: int | None = None, db=None, day: str | None = None) -> 
             db.close()
 
 
+def instance_name() -> str:
+    """Which agent installation is speaking.
+
+    Several machines can share one TELEGRAM_CHAT_ID, and an unlabelled alert
+    gives no way to tell which of them is unhealthy — we spent a day fixing the
+    wrong copy because of exactly that. Override with AGENT_INSTANCE_NAME when
+    the hostname isn't descriptive.
+    """
+    name = os.getenv("AGENT_INSTANCE_NAME", "").strip()
+    if name:
+        return name
+    try:
+        import socket
+
+        return socket.gethostname()
+    except Exception:  # noqa: BLE001 — a label must never break delivery
+        return "unknown-host"
+
+
 def send_alert(text: str) -> dict:
     """Push an anomaly alert to the configured channels."""
-    tg_ok, tg_msg = send_telegram(f"🚨 {text}")
-    dc_ok, dc_msg = send_discord(f"🚨 {text}")
+    msg = f"🚨 [{instance_name()}] {text}"
+    tg_ok, tg_msg = send_telegram(msg)
+    dc_ok, dc_msg = send_discord(msg)
     return {"sent": tg_ok or dc_ok, "telegram": tg_msg, "discord": dc_msg}
 
 

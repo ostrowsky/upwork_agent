@@ -143,6 +143,10 @@ class CaseStudy(Base):
     deleted = Column(Integer, default=0)
     # 1 = LLM-fabricated case tailored to a job (owner takes ToS responsibility).
     synthetic = Column(Integer, default=0)
+    # Long-form write-up of the case: the same problem domain as the job, but a
+    # DIFFERENT solution to a similar problem. `description` stays the one-line
+    # summary used for ranking and list views; this is the prose the client reads.
+    narrative = Column(Text, nullable=True)
     # Path to a generated attachment (PDF/PNG one-pager) for the Upwork proposal.
     artifact_path = Column(Text, nullable=True)
     # Job this synthetic case was generated for (NULL for manual base cases).
@@ -287,6 +291,8 @@ def _migrate_sqlite():
                 conn.execute(text("ALTER TABLE case_studies ADD COLUMN artifact_path TEXT"))
             if "job_id" not in ccols:
                 conn.execute(text("ALTER TABLE case_studies ADD COLUMN job_id INTEGER"))
+            if "narrative" not in ccols:
+                conn.execute(text("ALTER TABLE case_studies ADD COLUMN narrative TEXT"))
 
     if "proposals" in inspector.get_table_names():
         pcols = {c["name"] for c in inspector.get_columns("proposals")}
