@@ -22,6 +22,7 @@ def utc_today() -> str:
 from database import get_db_session, DailyReport
 from analytics import (
     compute_metrics,
+    metrics_scope_task_id,
     analytics_by_bucket,
     analytics_by_niche,
     analytics_by_budget_range,
@@ -46,6 +47,9 @@ def _worst(rows: list[dict], min_volume: int = 3):
 
 
 def build_report(db, task_id: int | None = None, day: str | None = None) -> dict:
+    # Default to the Dashboard's scope so the two never quote different numbers.
+    if task_id is None:
+        task_id = metrics_scope_task_id()
     m = compute_metrics(db, task_id)
     # The header says "отчёт за <day>", so the proposal side must be that day's
     # numbers — reporting all-time totals under a daily heading read as "nothing

@@ -779,13 +779,32 @@ def render_dashboard():
     st.subheader("Отчётность")
     rcol1, rcol2 = st.columns([1, 3])
     with rcol1:
-        if st.button("📤 Отправить отчёт сейчас"):
-            from reporting import send_report
+        from datetime import date, timedelta
 
-            with st.spinner("Формирую и отправляю отчёт…"):
-                res = send_report()
+        # Default to yesterday: a report for today covers a day that has barely
+        # started, which is what made the sent reports read as all-zero.
+        _day = st.date_input("Отчёт за день", value=date.today() - timedelta(days=1),
+                             max_value=date.today(), key="report_day")
+        _day_iso = _day.isoformat()
+
+        from reporting import build_report, format_report_text, send_report
+
+        _pdb = get_db_session()
+        try:
+            _preview = format_report_text(build_report(_pdb, day=_day_iso), day=_day_iso)
+        except Exception as e:  # noqa: BLE001 — a broken preview must not hide the button
+            _preview = f"(не удалось собрать отчёт: {type(e).__name__}: {e})"
+        finally:
+            _pdb.close()
+
+        with st.expander("Предпросмотр", expanded=True):
+            st.code(_preview, language=None)
+
+        if st.button("📤 Отправить в Telegram/Discord", key="send_report_btn"):
+            with st.spinner("Отправляю отчёт…"):
+                res = send_report(day=_day_iso)
             if res["sent"]:
-                st.success("Отчёт отправлен.")
+                st.success(f"Отчёт за {_day_iso} отправлен.")
             else:
                 st.warning("Отчёт сохранён, но каналы не настроены/недоступны.")
             st.caption(f"telegram: {res['telegram']} · discord: {res['discord']}")

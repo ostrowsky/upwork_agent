@@ -178,3 +178,25 @@ def test_cooldown_of_zero_disables_throttling(monkeypatch):
     monkeypatch.setenv("ALERT_REPEAT_COOLDOWN", "0")
     prev = {"alerted_anomalies": ["session_down"], "alerted_at": NOW}
     assert worker.should_alert(prev, ["session_down"], now=NOW) is True
+
+
+def test_tick_with_a_dead_session_sends_no_real_notification(status_file, monkeypatch):
+    """Regression: worker tests drive tick() with a failing probe, tick raises
+    session_down, and with real .env credentials the alert was DELIVERED to the
+    operator's Telegram — the suite was spamming production notifications.
+
+    conftest clears the credentials for every test, so the real senders must
+    short-circuit before touching the network. Any HTTP call here is a leak.
+    """
+    import httpx
+    import upwork_connect
+
+    attempted = []
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: attempted.append(a[0] if a else "?"))
+    monkeypatch.setattr(upwork_connect, "probe_session",
+                        lambda *a, **k: {"ok": False, "reason": "redirected to login"})
+
+    status = worker.tick()
+
+    assert "session_down" in status["anomalies"]  # the anomaly is still detected
+    assert attempted == []                        # but nothing left the machine

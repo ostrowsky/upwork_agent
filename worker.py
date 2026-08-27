@@ -401,9 +401,13 @@ def tick() -> dict:
     reported_day = report_day_for(now)
     if task_id is not None and prev.get("last_report_day") != today:
         try:
+            from analytics import metrics_scope_task_id
             from reporting import send_report
 
-            rep = send_report(task_id=task_id, day=reported_day)
+            # Same scope as the Dashboard — reporting only the active task made
+            # the Telegram figures disagree with the screen they get checked
+            # against as soon as a second task existed.
+            rep = send_report(task_id=metrics_scope_task_id(), day=reported_day)
             # Only mark the day done if a channel actually delivered, so a
             # transient Telegram failure doesn't skip the report all day.
             if rep.get("sent"):

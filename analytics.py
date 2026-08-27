@@ -195,7 +195,21 @@ def analytics_by_niche(db, task_id: int | None = None, min_volume: int = 3) -> l
     return _funnel_by_key(_outcome_jobs(db, task_id), niche_of, min_volume)
 
 
+def metrics_scope_task_id() -> int | None:
+    """Which task the funnel covers — for the Dashboard AND the daily report.
+
+    Both must use the SAME scope or their numbers silently disagree: the
+    Dashboard counted every task while the worker reported only the active one,
+    so with more than one task the Telegram figures would not match the screen
+    the operator checks them against. None = all tasks, which is what the
+    Dashboard has always shown.
+    """
+    return None
+
+
 def dashboard_metrics(task_id: int | None = None) -> dict:
+    if task_id is None:
+        task_id = metrics_scope_task_id()
     db = get_db_session()
     try:
         return {"funnel": compute_metrics(db, task_id), "buckets": analytics_by_bucket(db, task_id)}
