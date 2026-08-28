@@ -1088,13 +1088,17 @@ def render_jobs():
     with sc2:
         st.write("")
         st.write("")
-        go_submit = st.button(f"🚀 Отправить {int(n_submit)} лучших черновик(ов)", disabled=active is None)
+        go_submit = st.button(f"🚀 Отправить {int(n_submit)} лучших черновик(ов)")
     if go_submit:
+        from analytics import metrics_scope_task_id
         from submit import submit_ready
 
         bar, cb = make_progress("Автосабмит")
         with st.spinner("Открываю Upwork и отправляю отклики (один сеанс)…"):
-            ok, res = run_browser_op(lambda: submit_ready(active.id, limit=int(n_submit), progress=cb))
+            # Same scope as the job list and Autosubmit — a button that silently
+            # skipped other tasks' drafts would contradict the counts on screen.
+            ok, res = run_browser_op(
+                lambda: submit_ready(metrics_scope_task_id(), limit=int(n_submit), progress=cb))
         bar.empty()
         st.session_state["batchsubmitres"] = res if ok else {"submitted": 0, "errors": 0, "total": 0, "reason": "браузер занят"}
         st.rerun()
@@ -1103,26 +1107,33 @@ def render_jobs():
     # each READY_TO_PROPOSE, then submit the drafts. Respects the daily cap set
     # above; with the cap off it goes through all of them.
     st.divider()
+    from analytics import metrics_scope_task_id
+
     _cap_now = daily_submit_limit()
+    # Same scope as the job list below (and the Dashboard): counting only the
+    # active task's jobs advertised 19 while the list showed 23, and the two
+    # numbers describe the same set. The count and the action must use one
+    # scope, or the button under-delivers against what it promised.
+    _scope = metrics_scope_task_id()
     _ready_n = sum(1 for j in get_jobs()
                    if j.status in ("READY_TO_PROPOSE", "PROPOSAL_DRAFTED")
-                   and (active is None or j.task_id == active.id))
+                   and (_scope is None or j.task_id == _scope))
     st.caption(
         f"**Autosubmit** — по всем готовым вакансиям ({_ready_n}): сгенерировать кейс и отклик, "
         + ("затем отправить ВСЕ (дневной лимит снят)." if _cap_now <= 0
            else f"затем отправить в пределах дневного лимита ({_cap_now}).")
     )
-    if st.button("🤖 Autosubmit", disabled=active is None or _ready_n == 0, key="autosubmit"):
+    if st.button("🤖 Autosubmit", disabled=_ready_n == 0, key="autosubmit"):
         from proposals import generate_drafts_for_ready
         from submit import submit_ready
 
         bar, cb = make_progress("Autosubmit")
         with st.spinner(f"Генерирую кейсы и отклики для {_ready_n} вакансий…"):
-            drafted = generate_drafts_for_ready(active.id, limit=_ready_n)
+            drafted = generate_drafts_for_ready(_scope, limit=_ready_n)
         with st.spinner("Открываю Upwork и отправляю…"):
             # limit=-1 → no per-run slice; the daily cap is what bounds a live run.
             ok, sent = run_browser_op(
-                lambda: submit_ready(active.id, limit=-1, progress=cb))
+                lambda: submit_ready(_scope, limit=-1, progress=cb))
         bar.empty()
         st.session_state["autosubmitres"] = {
             "drafted": drafted,
@@ -1471,6 +1482,29 @@ def render_cases():
                 if _os.path.exists(png):
                     with dc2:
                         st.image(png, caption="Инфографика кейса", use_container_width=True)
+                # An artifact rendered before a field was added stays stale on
+                # disk — the write-up existed in the record but not in the PDF
+                # the client receives.
+                with dc1:
+                    if st.button("♻️ Перегенерировать файлы", key=f"rerender_{case.id}",
+                                 help="Пересобрать PDF и инфографику из текущих данных кейса"):
+                        from case_artifacts import render_case_pdf, render_case_png
+
+                        _d = get_db_session()
+                        try:
+                            _c = _d.query(CaseStudy).filter(CaseStudy.id == case.id).first()
+                            _c.artifact_path = render_case_pdf(_c)
+                            try:
+                                render_case_png(_c)
+                            except Exception:  # noqa: BLE001 — PNG is optional
+                                pass
+                            _d.commit()
+                            st.success("Файлы кейса пересобраны.")
+                        except Exception as _e:  # noqa: BLE001
+                            st.error(f"Не удалось пересобрать: {type(_e).__name__}: {_e}")
+                        finally:
+                            _d.close()
+                        st.rerun()
 
             col1, col2, col3 = st.columns(3)
 
@@ -1488,6 +1522,13 @@ def render_cases():
 
             st.write("**Описание:**")
             st.write(case.description)
+
+            # The long-form write-up — the part a client actually reads. Without
+            # it on screen there is no way to check what goes into the proposal
+            # and the PDF.
+            if getattr(case, "narrative", None):
+                st.write("**Подробное описание:**")
+                st.write(case.narrative)
 
             if case.result:
                 st.write("**Результат:**")

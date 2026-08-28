@@ -159,3 +159,24 @@ def test_agent_chat_funnel_uses_the_shared_scope():
         "agent chat is scoping the funnel to the active task again"
     assert "metrics_scope_task_id()" in text, \
         "agent chat must take its scope from the shared helper"
+
+
+def test_batch_buttons_count_and_act_on_the_same_scope():
+    """Autosubmit advertised "по всем готовым вакансиям (19)" while the list
+    right below it showed 23 — the button counted only the active task's jobs.
+    A count and the action it labels must describe the same set.
+
+    app.py is a Streamlit script and cannot be imported, so the wiring is
+    asserted at source level.
+    """
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent.parent / "app.py").read_text(encoding="utf-8")
+    block = src[src.index("_ready_n = sum("):]
+    block = block[:block.index("_bsr = st.session_state.get")]
+
+    assert "_scope is None or j.task_id == _scope" in block, \
+        "the ready-jobs count is scoped differently from the job list again"
+    assert "generate_drafts_for_ready(_scope" in block, "drafting must use the counted scope"
+    assert "submit_ready(_scope" in block, "submitting must use the counted scope"
+    assert "active.id" not in block, "batch actions must not silently narrow to the active task"

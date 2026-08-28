@@ -211,3 +211,39 @@ def test_layout_renders_narrative_paragraphs():
     d = case_artifacts._layout_from_case(
         {"title": "T", "description": "s", "narrative": "Para one.\n\nPara two."})
     assert d["narrative"] == "Para one.\n\nPara two."
+
+
+def test_narrative_is_actually_inside_the_rendered_pdf(tmp_path):
+    """Assert on the PDF's TEXT, not its size.
+
+    A size comparison passed while the stored artifact had no write-up at all —
+    it only proved two fresh renders differed from each other, which says
+    nothing about what a given file contains.
+    """
+    pypdf = pytest.importorskip("pypdf")  # installed transitively; skip if absent
+
+    case = {
+        "title": "Co-op slice",
+        "niche": "Unity multiplayer",
+        "description": "Short summary for lists.",
+        "result": "Publisher signed",
+        "narrative": ("The studio needed a playable co-op slice for a publisher pitch. "
+                      "We chose client-side prediction over lockstep, which stalls on a "
+                      "single slow peer."),
+    }
+    out = case_artifacts.render_case_pdf(case, out_path=tmp_path / "c.pdf")
+    text = "\n".join(p.extract_text() or "" for p in pypdf.PdfReader(out).pages)
+
+    assert "How we solved a similar problem" in text
+    assert "client-side prediction" in text
+    assert "Short summary for lists." in text  # the summary is still there too
+
+
+def test_pdf_without_narrative_has_no_empty_section(tmp_path):
+    pypdf = pytest.importorskip("pypdf")
+
+    out = case_artifacts.render_case_pdf(
+        {"title": "T", "description": "s", "result": "r"}, out_path=tmp_path / "c.pdf")
+    text = "\n".join(p.extract_text() or "" for p in pypdf.PdfReader(out).pages)
+
+    assert "How we solved a similar problem" not in text
