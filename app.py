@@ -554,8 +554,8 @@ def build_task_system_prompt(task):
     return base
 
 
-def task_chat_reply(task):
-    """Build messages from stored history and call the LLM. Lazy-imports ai."""
+def _task_chat_plain_reply(task):
+    """Conversational answer with no tool call — the original behaviour."""
     from ai import call_llm
 
     history = get_task_messages(task.id)
@@ -563,6 +563,40 @@ def task_chat_reply(task):
     for m in history[-CHAT_HISTORY_WINDOW:]:
         messages.append({"role": m.role, "content": m.content})
     return call_llm(messages)
+
+
+def task_chat_reply(task):
+    """Reply in the task chat — through the SAME tool pipeline as «Чат с агентом».
+
+    This chat used to be a bare call_llm with no tools, so "установи стратегию"
+    here produced a confident description of a new strategy and changed NOTHING,
+    while the identical request in the agent chat really wrote task.strategy.
+    Two dialogs over one entity, one of them lying about what it had done.
+
+    Both now go through agent_tools, so a change made in either place lands in
+    the same record. The write targets the task ON SCREEN, not whichever task is
+    active — editing task #2 here must not rewrite task #1's strategy.
+    """
+    import agent_tools
+    from ai import call_llm
+
+    history = get_task_messages(task.id)
+    if not history:
+        return _task_chat_plain_reply(task)
+
+    prompt = history[-1].content if history[-1].role == "user" else ""
+    hist = [(m.role, m.content) for m in history[:-1]][-CHAT_HISTORY_WINDOW:]
+    if not prompt:
+        return _task_chat_plain_reply(task)
+
+    decision = agent_tools.select_action(prompt, hist, build_task_system_prompt(task), call_llm)
+    action = decision.get("action", "none")
+    if not action or action == "none":
+        return decision.get("reply") or _task_chat_plain_reply(task)
+
+    res = agent_tools.run_action(action, decision.get("args", {}), task.id)
+    mark = "✅" if res.get("ok") else "⚠️"
+    return f"{_task_chat_plain_reply(task)}\n\n🔧 {mark} {res['summary']}"
 
 
 def render_companies_tasks():
@@ -1697,13 +1731,20 @@ def build_agent_chat_context():
         else:
             lines.append("Активной задачи нет (выбери в «Компании и задачи»).")
 
-        m = compute_metrics(db, tid)
+        # Same scope as the Dashboard and the daily report. Scoping the funnel to
+        # the active task made the agent quote different numbers than the screen
+        # next to it (11 proposals / 147 connects against 12 / 167), which is
+        # indistinguishable from a bug to whoever is reading them.
+        from analytics import metrics_scope_task_id
+
+        scope = metrics_scope_task_id()
+        m = compute_metrics(db, scope)
         lines.append(
             f"ВОРОНКА: отклики={m['proposals_sent']}, connects потрачено={m['connects_spent']}, "
             f"ответы={m['replies']}, интервью={m['interviews']}, найм={m['hires']}, "
             f"выручка=${m['revenue']}, проигрыши={m['lost']}"
         )
-        under = [b["bucket"] for b in analytics_by_bucket(db, tid) if b["underperforming"]]
+        under = [b["bucket"] for b in analytics_by_bucket(db, scope) if b["underperforming"]]
         if under:
             lines.append("НЕЭФФЕКТИВНЫЕ КАТЕГОРИИ (≥3 отправок, 0 наймов): " + ", ".join(under))
 

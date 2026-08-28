@@ -59,6 +59,8 @@ def build_report(db, task_id: int | None = None, day: str | None = None) -> dict
     m["proposals_sent_today"] = today["proposals_sent"]
     m["connects_spent_today"] = today["connects_spent"]
     m["sent_jobs_today"] = today.get("sent_jobs") or []
+    # Fallback for a day with no sends, newest first.
+    m["recent_sent_jobs"] = list(reversed((m.get("sent_jobs") or [])))[:5]
     buckets = analytics_by_bucket(db, task_id)
     niches = analytics_by_niche(db, task_id)
     ranges = analytics_by_budget_range(db, task_id)
@@ -107,11 +109,22 @@ def format_report_text(m: dict, day: str | None = None) -> str:
     # Which jobs the day's proposals went to — the counts above say how many,
     # this says to what.
     _sent_jobs = m.get("sent_jobs_today") or []
+    _recent = m.get("recent_sent_jobs") or []
     if _sent_jobs:
         lines.append(f"\nОтклики отправлены ({len(_sent_jobs)}):")
-        for j in _sent_jobs:
-            lines.append(f"  • #{j['job_id']} {str(j['title'])[:70]}"
-                         + (f" — {j['connects']} cn" if j.get("connects") else ""))
+        _rows = _sent_jobs
+    elif _recent:
+        # A quiet day still deserves a usable report: without this the operator
+        # gets a wall of zeros and no way to reach anything that WAS sent.
+        lines.append(f"\nЗа этот день откликов не было. Последние отправленные:")
+        _rows = _recent
+    else:
+        _rows = []
+    for j in _rows:
+        lines.append(f"  • #{j['job_id']} {str(j['title'])[:70]}"
+                     + (f" — {j['connects']} cn" if j.get("connects") else ""))
+        if j.get("url"):
+            lines.append(f"    {j['url']}")
 
     try:
         from connects import read_balance

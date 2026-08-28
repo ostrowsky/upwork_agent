@@ -117,3 +117,45 @@ def test_day_scoped_figures_never_exceed_the_totals(db):
     assert rep["proposals_sent_today"] <= rep["proposals_sent"]
     assert rep["connects_spent_today"] <= rep["connects_spent"]
     assert len(rep["sent_jobs_today"]) == rep["proposals_sent_today"]
+
+
+def test_report_links_to_every_job_it_lists(db):
+    """A job number and title aren't actionable — the operator needs the link."""
+    _seed_two_tasks(db)
+    db.query(Job).filter(Job.id == 1).update(
+        {"source_url": "https://www.upwork.com/jobs/~0211111111111111111/"})
+    db.commit()
+
+    text = reporting.format_report_text(
+        reporting.build_report(db, day="2026-08-20"), day="2026-08-20")
+
+    assert "https://www.upwork.com/jobs/~0211111111111111111/" in text
+
+
+def test_quiet_day_still_lists_recent_proposals(db):
+    """A day with no sends produced a wall of zeros and no way to reach
+    anything that WAS sent."""
+    _seed_two_tasks(db)
+    text = reporting.format_report_text(
+        reporting.build_report(db, day="2026-08-25"), day="2026-08-25")  # nothing that day
+
+    assert "Proposals sent: 0" in text
+    assert "Последние отправленные" in text
+    assert "unity job" in text
+
+
+def test_agent_chat_funnel_uses_the_shared_scope():
+    """The agent quoted 11 proposals / 147 connects while the Dashboard beside
+    it showed 12 / 167, because the chat context scoped the funnel to the active
+    task. app.py is a Streamlit script and cannot be imported in a test, so the
+    wiring is asserted at source level — the invariant is what matters.
+    """
+    from pathlib import Path
+
+    src = Path(__file__).resolve().parent.parent / "app.py"
+    text = src.read_text(encoding="utf-8")
+
+    assert "compute_metrics(db, tid)" not in text, \
+        "agent chat is scoping the funnel to the active task again"
+    assert "metrics_scope_task_id()" in text, \
+        "agent chat must take its scope from the shared helper"
